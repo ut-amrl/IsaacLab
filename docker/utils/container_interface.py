@@ -76,6 +76,9 @@ class ContainerInterface:
         self.environ = os.environ.copy()
         self.environ["DOCKER_NAME_SUFFIX"] = self.suffix
 
+        # detect if we're using podman-compose
+        self._detect_compose_command()
+
         # resolve the image extension through the passed yamls and envs
         self._resolve_image_extension(yamls, envs)
         # load the environment variables from the .env files
@@ -122,33 +125,65 @@ class ContainerInterface:
 
         # build the image for the base profile if not running base (up will build base already if profile is base)
         if self.profile != "base":
+            if self.is_podman:
+                # For podman, specify the base service directly
+                subprocess.run(
+                    [
+                        "docker",
+                        "compose",
+                        "--file",
+                        "docker-compose.yaml",
+                        "--env-file",
+                        ".env.base",
+                        "build",
+                        "isaac-lab-base",
+                    ],
+                    check=False,
+                    cwd=self.context_dir,
+                    env=self.environ,
+                )
+            else:
+                # For docker compose, use profiles
+                subprocess.run(
+                    [
+                        "docker",
+                        "compose",
+                        "--file",
+                        "docker-compose.yaml",
+                        "--env-file",
+                        ".env.base",
+                        "build",
+                        "isaac-lab-base",
+                    ],
+                    check=False,
+                    cwd=self.context_dir,
+                    env=self.environ,
+                )
+
+        # build the image for the profile
+        if self.is_podman and self.service_name:
+            # For podman-compose, specify the service name directly
             subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "--file",
-                    "docker-compose.yaml",
-                    "--env-file",
-                    ".env.base",
-                    "build",
-                    "isaac-lab-base",
-                ],
+                ["docker", "compose"]
+                + self.add_yamls
+                + self.add_env_files
+                + ["up", "--detach", "--build", "--remove-orphans", self.service_name],
                 check=False,
                 cwd=self.context_dir,
                 env=self.environ,
             )
-
-        # build the image for the profile
-        subprocess.run(
-            ["docker", "compose"]
-            + self.add_yamls
-            + self.add_profiles
-            + self.add_env_files
-            + ["up", "--detach", "--build", "--remove-orphans"],
-            check=False,
-            cwd=self.context_dir,
-            env=self.environ,
-        )
+        else:
+            # For docker compose, use profiles
+            subprocess.run(
+                ["docker", "compose"]
+                + self.add_yamls
+                + self.add_profiles
+                + self.add_env_files
+                + ["up", "--detach", "--build", "--remove-orphans"],
+                check=False,
+                cwd=self.context_dir,
+                env=self.environ,
+            )
 
     def enter(self):
         """Enter the running container by executing a bash shell.
@@ -178,12 +213,22 @@ class ContainerInterface:
         """
         if self.is_container_running():
             print(f"[INFO] Stopping the launched docker container '{self.container_name}'...\n")
-            subprocess.run(
-                ["docker", "compose"] + self.add_yamls + self.add_profiles + self.add_env_files + ["down", "--volumes"],
-                check=False,
-                cwd=self.context_dir,
-                env=self.environ,
-            )
+            if self.is_podman and self.service_name:
+                # For podman-compose, specify the service name directly
+                subprocess.run(
+                    ["docker", "compose"] + self.add_yamls + self.add_env_files + ["down", "--volumes", self.service_name],
+                    check=False,
+                    cwd=self.context_dir,
+                    env=self.environ,
+                )
+            else:
+                # For docker compose, use profiles
+                subprocess.run(
+                    ["docker", "compose"] + self.add_yamls + self.add_profiles + self.add_env_files + ["down", "--volumes"],
+                    check=False,
+                    cwd=self.context_dir,
+                    env=self.environ,
+                )
         else:
             raise RuntimeError(f"Can't stop container '{self.container_name}' as it is not running.")
 
@@ -255,16 +300,42 @@ class ContainerInterface:
             output = []
 
         # run the docker compose config command to generate the configuration
-        subprocess.run(
-            ["docker", "compose"] + self.add_yamls + self.add_profiles + self.add_env_files + ["config"] + output,
-            check=False,
-            cwd=self.context_dir,
-            env=self.environ,
-        )
+        if self.is_podman:
+            # For podman-compose, don't use profiles
+            subprocess.run(
+                ["docker", "compose"] + self.add_yamls + self.add_env_files + ["config"] + output,
+                check=False,
+                cwd=self.context_dir,
+                env=self.environ,
+            )
+        else:
+            # For docker compose, use profiles
+            subprocess.run(
+                ["docker", "compose"] + self.add_yamls + self.add_profiles + self.add_env_files + ["config"] + output,
+                check=False,
+                cwd=self.context_dir,
+                env=self.environ,
+            )
 
     """
     Helper functions.
     """
+
+    def _detect_compose_command(self):
+        """Detect whether we're using docker compose or podman-compose and set appropriate flags."""
+        # Check if we're using podman-compose by running docker compose version
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "version"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            # If the output contains "podman-compose", we're using podman
+            self.is_podman = "podman-compose" in result.stderr.lower()
+        except (subprocess.SubprocessError, FileNotFoundError):
+            # Fallback: assume docker if we can't determine
+            self.is_podman = False
 
     def _resolve_image_extension(self, yamls: list[str] | None = None, envs: list[str] | None = None):
         """
@@ -277,7 +348,18 @@ class ContainerInterface:
                 they are provided.
         """
         self.add_yamls = ["--file", "docker-compose.yaml"]
-        self.add_profiles = ["--profile", f"{self.profile}"]
+
+        # Handle profiles differently for podman-compose vs docker compose
+        if self.is_podman:
+            # podman-compose doesn't support --profile, so we'll specify service names directly
+            self.add_profiles = []
+            # Map profile names to service names
+            self.service_name = f"isaac-lab-{self.profile}"
+        else:
+            # Standard docker compose supports profiles
+            self.add_profiles = ["--profile", f"{self.profile}"]
+            self.service_name = None
+
         self.add_env_files = ["--env-file", ".env.base"]
 
         # extend env file based on profile
