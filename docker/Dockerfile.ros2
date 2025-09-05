@@ -11,14 +11,19 @@ ARG ROS2_APT_PACKAGE
 
 # ROS2 Humble Apt installations
 RUN --mount=type=cache,target=/var/cache/apt \
-    apt-get update && apt-get install -y --no-install-recommends \
+    apt-get update && apt-get install -y --no-install-recommends --allow-downgrades \
     curl \
+    # Install missing system dependencies first
+    libfreetype6-dev \
+    # Fix libbrotli version conflict by installing the correct version
+    libbrotli1=1.0.9-2build6 \
+    libbrotli-dev=1.0.9-2build6 \
     # Install ROS2 Humble \
     software-properties-common && \
     add-apt-repository universe && \
     curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo jammy) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null && \
-    apt-get update && apt-get install -y --no-install-recommends \
+    apt-get update && apt-get install -y --no-install-recommends --allow-downgrades \
     ros-humble-${ROS2_APT_PACKAGE} \
     ros-humble-vision-msgs \
     # Install both FastRTPS and CycloneDDS
