@@ -26,6 +26,9 @@ RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends --allow-downgrades \
     ros-humble-${ROS2_APT_PACKAGE} \
     ros-humble-vision-msgs \
+    # Install navigation
+    ros-humble-navigation2 \
+    ros-humble-nav2-bringup \
     # Install both FastRTPS and CycloneDDS
     ros-humble-rmw-cyclonedds-cpp \
     ros-humble-rmw-fastrtps-cpp \
