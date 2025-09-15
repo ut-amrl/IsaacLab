@@ -164,10 +164,19 @@ class ContainerInterface:
         if self.is_podman and self.service_name:
             # For podman-compose, specify the service name directly
             subprocess.run(
-                ["docker", "compose"]
+                [
+                    "docker",
+                    "compose"
+                ]
                 + self.add_yamls
                 + self.add_env_files
-                + ["up", "--detach", "--build", "--remove-orphans", self.service_name],
+                + [
+                    "up",
+                    "--detach",
+                    "--build",
+                    "--remove-orphans",
+                    self.service_name
+                ],
                 check=False,
                 cwd=self.context_dir,
                 env=self.environ,

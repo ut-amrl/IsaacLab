@@ -106,6 +106,10 @@ services:
     entrypoint: bash
     stdin_open: true
     tty: true
+    security_opt:
+      - label=disable
+    devices:
+      - nvidia.com/gpu=all
 
   # This service adds a ROS2 Humble
   # installation on top of the base image
@@ -135,6 +139,10 @@ services:
     entrypoint: bash
     stdin_open: true
     tty: true
+    security_opt:
+      - label=disable
+    devices:
+      - nvidia.com/gpu=all
 
 volumes:
   # isaac-sim
