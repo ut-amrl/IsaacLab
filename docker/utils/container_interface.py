@@ -405,3 +405,7 @@ class ContainerInterface:
         for i in range(1, len(self.add_env_files), 2):
             with open(self.context_dir / self.add_env_files[i]) as f:
                 self.dot_vars.update(dict(line.strip().split("=", 1) for line in f if "=" in line))
+        
+        # Merge the .env file variables into the environment for podman-compose compatibility
+        # This ensures that podman-compose has access to all environment variables from .env files
+        self.environ.update(self.dot_vars)

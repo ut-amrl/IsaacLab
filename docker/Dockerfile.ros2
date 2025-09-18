@@ -26,6 +26,8 @@ RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends --allow-downgrades \
     ros-humble-${ROS2_APT_PACKAGE} \
     ros-humble-vision-msgs \
+    # Install kinova
+    ros-humble-kortex-bringup \
     # Install navigation
     ros-humble-navigation2 \
     ros-humble-nav2-bringup \
@@ -38,9 +40,7 @@ RUN --mount=type=cache,target=/var/cache/apt \
     # their extension.toml
     ${ISAACLAB_PATH}/isaaclab.sh -p ${ISAACLAB_PATH}/tools/install_deps.py rosdep ${ISAACLAB_PATH}/source && \
     apt -y autoremove && apt clean autoclean && \
-    rm -rf /var/lib/apt/lists/* && \
-    # Add sourcing of setup.bash to .bashrc
-    echo "source /opt/ros/humble/setup.bash" >> ${HOME}/.bashrc
+    rm -rf /var/lib/apt/lists/*
 
 # Copy the RMW specifications for ROS2
 # https://docs.isaacsim.omniverse.nvidia.com/latest/installation/install_ros.html
