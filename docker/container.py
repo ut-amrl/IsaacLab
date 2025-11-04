@@ -68,6 +68,24 @@ def parse_cli_args() -> argparse.Namespace:
     subparsers.add_parser(
         "enter", help="Begin a new bash process within an existing Isaac Lab container.", parents=[parent_parser]
     )
+    subparsers.add_parser(
+        "restart", help="Restart an existing stopped container without rebuilding.", parents=[parent_parser]
+    )
+    exec_parser = subparsers.add_parser(
+        "exec",
+        help="Execute a command in the running container (non-interactive, suitable for automation/LLMs).",
+        parents=[parent_parser],  # Use parent_parser, not exec_parent_parser
+    )
+    exec_parser.add_argument(
+        "--cmd",
+        required=True,
+        help='Command to execute in the container (use quotes, e.g., --cmd "ls -la").',
+    )
+    exec_parser.add_argument(
+        "--workdir",
+        default=None,
+        help="Working directory inside the container. Defaults to container's default workdir.",
+    )
     config = subparsers.add_parser(
         "config",
         help=(
@@ -124,6 +142,19 @@ def main(args: argparse.Namespace):
         x11_utils.x11_refresh(ci.statefile)
         # enter the container
         ci.enter()
+    elif args.command == "restart":
+        # check if x11 forwarding is enabled
+        x11_outputs = x11_utils.x11_check(ci.statefile)
+        # if x11 forwarding is enabled, add the x11 yaml and environment variables
+        if x11_outputs is not None:
+            (x11_yaml, x11_envar) = x11_outputs
+            ci.add_yamls += x11_yaml
+            ci.environ.update(x11_envar)
+        # restart the container
+        ci.restart()
+    elif args.command == "exec":
+        # execute the command in the container
+        ci.exec_command(args.cmd, workdir=args.workdir)
     elif args.command == "config":
         ci.config(args.output_yaml)
     elif args.command == "copy":

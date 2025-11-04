@@ -77,8 +77,10 @@ The script ``container.py`` parallels basic ``docker compose`` commands. Each ca
 or else they will default to the ``base`` image extension. These commands are:
 
 * **start**: This builds the image and brings up the container in detached mode (i.e. in the background).
+* **restart**: This starts an existing stopped container without rebuilding the image (faster than ``start``).
 * **enter**: This begins a new bash process in an existing Isaac Lab container, and which can be exited
   without bringing down the container.
+* **exec**: This executes a command in the running container non-interactively. Useful for automation, scripts, and LLMs.
 * **config**: This outputs the compose.yaml which would be result from the inputs given to ``container.py start``. This command is useful
   for debugging a compose configuration.
 * **copy**: This copies the ``logs``, ``data_storage`` and ``docs/_build`` artifacts, from the ``isaac-lab-logs``, ``isaac-lab-data`` and ``isaac-lab-docs``
@@ -100,6 +102,23 @@ The following shows how to launch the container in a detached state and enter it
     # Enter the container
     # We pass 'base' explicitly, but if we hadn't it would default to 'base'
     ./docker/container.py enter base
+
+If the container is stopped but already built, you can restart it without rebuilding:
+
+.. code:: bash
+
+    # Restart a stopped container (much faster than start)
+    ./docker/container.py restart base
+
+To execute commands in the container non-interactively (useful for automation):
+
+.. code:: bash
+
+    # Execute a single command
+    ./docker/container.py exec base --cmd "python --version"
+    
+    # Execute with specific working directory
+    ./docker/container.py exec base --workdir /workspace/isaaclab --cmd "ls -la"
 
 To copy files from the base container to the host machine, you can use the following command:
 

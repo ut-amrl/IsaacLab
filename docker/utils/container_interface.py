@@ -194,6 +194,121 @@ class ContainerInterface:
                 env=self.environ,
             )
 
+    def restart(self):
+        """Restart an existing stopped container without rebuilding.
+
+        Raises:
+            RuntimeError: If the container doesn't exist or is already running.
+        """
+        # Check if container is already running
+        if self.is_container_running():
+            print(f"[INFO] Container '{self.container_name}' is already running.")
+            return
+
+        # Check if container exists (even if stopped)
+        result = subprocess.run(
+            ["docker", "container", "inspect", "-f", "{{.State.Status}}", self.container_name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"The container '{self.container_name}' does not exist. "
+                "Please use the 'start' command to build and create it first."
+            )
+        
+        status = result.stdout.strip()
+        print(f"[INFO] Container '{self.container_name}' is currently '{status}'.")
+        print(f"[INFO] Starting the existing container '{self.container_name}' without rebuilding...\n")
+        
+        # Start the container without rebuilding
+        if self.is_podman and self.service_name:
+            # For podman-compose, use the service name
+            subprocess.run(
+                [
+                    "docker",
+                    "compose"
+                ]
+                + self.add_yamls
+                + self.add_env_files
+                + [
+                    "start",
+                    self.service_name
+                ],
+                check=False,
+                cwd=self.context_dir,
+                env=self.environ,
+            )
+        else:
+            # For docker compose, use profiles
+            subprocess.run(
+                ["docker", "compose"]
+                + self.add_yamls
+                + self.add_profiles
+                + self.add_env_files
+                + ["start"],
+                check=False,
+                cwd=self.context_dir,
+                env=self.environ,
+            )
+        
+        print(f"[INFO] Container '{self.container_name}' has been started successfully.")
+
+    def exec_command(self, cmd: str | list[str], workdir: str | None = None):
+        """Execute a command in the running container (non-interactive).
+
+        This method is suitable for automation tools, scripts, and LLMs that need to run commands
+        and capture output without interactive terminal sessions.
+
+        Args:
+            cmd: The command to execute. Can be a string (e.g., "ls -la") or list of strings (e.g., ["ls", "-la"]).
+                 If a string is provided, it will be executed via bash -c.
+            workdir: Optional working directory inside the container. Defaults to None (uses container's default).
+
+        Raises:
+            RuntimeError: If the container is not running.
+        """
+        if not self.is_container_running():
+            raise RuntimeError(
+                f"The container '{self.container_name}' is not running. "
+                "Use 'restart' to start it or 'start' to build and create it."
+            )
+
+        # Convert string command to list for bash -c execution
+        if isinstance(cmd, str):
+            cmd_display = cmd
+            cmd_list = ["bash", "-c", cmd]
+        else:
+            cmd_display = " ".join(cmd)
+            cmd_list = cmd
+
+        print(f"[INFO] Executing command in '{self.container_name}': {cmd_display}\n")
+        
+        # Build the docker exec command
+        exec_cmd = ["docker", "exec"]
+        
+        # Add DISPLAY environment variable if available (for GUI apps)
+        if "DISPLAY" in os.environ:
+            exec_cmd.extend(["-e", f"DISPLAY={os.environ['DISPLAY']}"])
+        
+        # Add working directory if specified
+        if workdir:
+            exec_cmd.extend(["--workdir", workdir])
+        
+        # Add container name
+        exec_cmd.append(self.container_name)
+        
+        # Add the command to execute
+        exec_cmd.extend(cmd_list)
+        
+        # Execute the command (output will be shown in terminal)
+        result = subprocess.run(exec_cmd, check=False)
+        
+        # Return the exit code
+        return result.returncode
+
     def enter(self):
         """Enter the running container by executing a bash shell.
 
