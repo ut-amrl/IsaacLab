@@ -19,6 +19,15 @@ export PYTORCH_JIT=0
 export TORCH_COMPILE_DISABLE=1
 echo "✓ PyTorch JIT compilation disabled"
 
+# Limit threading to prevent resource exhaustion
+# PyTorch, NumPy, and OpenMP can create too many threads causing crashes
+export OMP_NUM_THREADS=4
+export MKL_NUM_THREADS=4
+export OPENBLAS_NUM_THREADS=4
+export NUMEXPR_NUM_THREADS=4
+export VECLIB_MAXIMUM_THREADS=4
+echo "✓ Thread limits set (4 threads per library)"
+
 # Source ROS2
 if [ -f "/opt/ros/humble/setup.bash" ]; then
     source /opt/ros/humble/setup.bash
