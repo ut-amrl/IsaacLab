@@ -1,0 +1,26 @@
+# Docker Compose extension for OpenPI Kinova Bridge
+# Usage: ./container.py start ros2 --files docker-compose.openpi.yaml --env-files .env.openpi
+#
+# This file extends the isaac-lab-ros2 service with OpenPI-specific mounts and config
+
+services:
+  # Extend the ros2 service with OpenPI additions
+  isaac-lab-ros2:
+    volumes:
+      # Add OpenPI-specific mounts to ros2 container
+      - type: bind
+        source: ${HOME}/cobot_ws
+        target: ${DOCKER_ISAACLAB_PATH}/cobot_ws
+      - type: bind
+        source: ${HOME}/.venv_cobot
+        target: /root/.venv_cobot
+      - type: bind
+        source: ${HOME}/cobot_ws/checkpoints/cobot_finetune_grab_can_150_eep_with_gripper__001/29999
+        target: /robodata/pizero/cobot_moma/lerobot_dataset_2/cobot_moma
+      - type: bind
+        source: ../content
+        target: ${DOCKER_ISAACLAB_PATH}/content
+    labels:
+      - "isaaclab.extension=openpi"
+      - "isaaclab.description=OpenPI Kinova ROS2 bridge with PyTorch"
+
