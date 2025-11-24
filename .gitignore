@@ -8,11 +8,17 @@
 **/*.dmp
 **/.thumbs
 
-# No USD files allowed in the repo
+# No USD files allowed in the repo (exceptions below)
 **/*.usd
 **/*.usda
 **/*.usdc
 **/*.usdz
+
+# USD files - exception for versioned assets tracked with Git LFS
+!content/**/*.usd
+!content/**/*.usda
+!content/**/*.usdc
+!content/**/*.usdz
 
 # Python
 .DS_Store
