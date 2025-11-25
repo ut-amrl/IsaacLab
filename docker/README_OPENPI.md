@@ -65,6 +65,17 @@ cd /workspace/isaaclab/_isaac_sim
 CUDA_VISIBLE_DEVICES=1 WG_IP=10.0.0.201 ./runheadless.sh --/app/livestream/publicEndpointAddress=$WG_IP --/app/livestream/port=49101
 ```
 
+### 6. Setting up Isaac Sim Scene
+
+In Isaac Sim UI:
+
+1. **Load the cobot stage**: `File` > `Open` > `/workspace/isaaclab/content/stage-19.usd`
+   - This loads the cobot with mounted Kinova arm and all action graphs for ROS2 pub/sub (joint states, camera topics)
+
+2. **Add environment** (optional): In Content browser > `Environments` > `Simple_Room` > drag `simple_room.usd` to viewport
+
+3. **Add props** (optional): In Content browser > `Props` > `Mugs` > drag a mug to the scene
+
 ## Architecture
 
 ```
