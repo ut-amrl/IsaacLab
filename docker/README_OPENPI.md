@@ -65,6 +65,14 @@ cd /workspace/isaaclab/_isaac_sim
 CUDA_VISIBLE_DEVICES=1 WG_IP=10.0.0.201 ./runheadless.sh --/app/livestream/publicEndpointAddress=$WG_IP --/app/livestream/port=49101
 ```
 
+**If Isaac Sim freezes or becomes unresponsive:**
+
+```bash
+# From host machine, kill all Isaac Sim processes in container
+cd ~/IsaacLab/docker
+./container.py exec ros2 --cmd "pkill -9 -f isaac-sim"
+```
+
 ### 6. Setting up Isaac Sim Scene
 
 In Isaac Sim UI:
