@@ -37,6 +37,7 @@ apt-get install -y -qq \
   ros-humble-moveit-msgs \
   ros-humble-shape-msgs \
   ros-humble-ros-testing \
+  ros-humble-launch-param-builder \
   ros-humble-moveit-resources \
   ros-humble-moveit-resources-fanuc-moveit-config \
   ros-humble-moveit-resources-panda-moveit-config \

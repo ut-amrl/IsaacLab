@@ -62,7 +62,7 @@ Do *NOT* activate environments because IsaacSim runs on its own environment.
 
 ```bash
 cd /workspace/isaaclab/_isaac_sim
-CUDA_VISIBLE_DEVICES=1 WG_IP=10.0.0.201 ./runheadless.sh --/app/livestream/publicEndpointAddress=$WG_IP --/app/livestream/port=49101
+CUDA_VISIBLE_DEVICES=0 WG_IP=10.0.0.201 ./runheadless.sh --/app/livestream/publicEndpointAddress=$WG_IP --/app/livestream/port=49101
 ```
 
 **If Isaac Sim freezes or becomes unresponsive:**
