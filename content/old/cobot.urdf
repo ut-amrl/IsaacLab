@@ -1,0 +1,180 @@
+<?xml version="1.0" ?>
+<!-- =================================================================================== -->
+<!-- |  Cobot stage/base only. Kinova arm and Robotiq gripper removed.                   | -->
+<!-- |  Arm and gripper are now provided by official NVIDIA Isaac Sim USD assets.       | -->
+<!-- =================================================================================== -->
+<robot name="cobot_stage">
+  <material name="cobot_silver">
+    <color rgba="0.700 0.700 0.700 1.000"/>
+  </material>
+  <link name="cobot_base_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.004518 0.003782 -0.023908"/>
+      <mass value="317800"/>
+      <inertia ixx="6.196" ixy="-0.2254" ixz="-0.002643" iyy="8.576" iyz="-0.05173" izz="5.573"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="cobot_silver"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="cobot_tower_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.004228682499030221 0.27828016243522474 -0.13390171776641763"/>
+      <mass value="9.740622494426086"/>
+      <inertia ixx="0.387337" ixy="3e-06" ixz="0.0" iyy="0.053274" iyz="-1.2e-05" izz="0.362911"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/tower_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="cobot_silver"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/tower_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="cobot_camera_mount_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.3736008189733288 0.477366826897979 0.06509007288610352"/>
+      <mass value="7.458394551273814"/>
+      <inertia ixx="0.545028" ixy="0.0" ixz="-0.0" iyy="0.216041" iyz="-0.013955" izz="0.329949"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/camera_mount_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="cobot_silver"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/camera_mount_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="cobot_camera_bracket_15deg_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.018878034262298816 0.9612624474176844 -0.20250839826954536"/>
+      <mass value="0.12679248702603627"/>
+      <inertia ixx="3.4e-05" ixy="-1.1e-05" ixz="-0.0" iyy="4e-05" iyz="0.0" izz="6e-05"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/camera_bracket_15deg_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="cobot_silver"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/camera_bracket_15deg_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="cobot_touchscreen_mount_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.10257061989588813 0.35952664019428554 -0.280317930464361"/>
+      <mass value="2.104428558084481"/>
+      <inertia ixx="0.005247" ixy="0.001211" ixz="0.0" iyy="0.003705" iyz="-0.0" izz="0.005079"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/touchscreen_mount_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="cobot_silver"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/touchscreen_mount_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="cobot_touchscreen_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.28631139458904464 0.4916227921795838 -0.15906439759053917"/>
+      <mass value="2.507604"/>
+      <inertia ixx="0.032594" ixy="-0.005055" ixz="0.0" iyy="0.032594" iyz="-0.0" izz="0.010117"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/touchscreen_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="cobot_silver"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/touchscreen_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="cobot_kinect_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.03237959018446581 1.0633540891953976 0.3390346686197424"/>
+      <mass value="2.454337583446389"/>
+      <inertia ixx="0.0024" ixy="0.001017" ixz="0.0" iyy="0.005054" iyz="-0.0" izz="0.003691"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/kinect_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="cobot_silver"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="file:///workspace/isaaclab/cobot_ws/install/cobot_description/share/cobot_description/meshes/kinect_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="cobot_Rigid 5" type="fixed">
+    <origin rpy="0.0 0.0 3.141593" xyz="0 0 0.110"/>
+    <parent link="cobot_base_link"/>
+    <child link="cobot_tower_link"/>
+  </joint>
+  <joint name="cobot_Rigid 9" type="fixed">
+    <origin rpy="0.0 -0.0 -3.141593" xyz="-0.3950 0.0170 0.27120"/>
+    <parent link="cobot_tower_link"/>
+    <child link="cobot_camera_mount_link"/>
+  </joint>
+  <joint name="cobot_Rigid 10" type="fixed">
+    <origin rpy="-0.0 0.0 3.141593" xyz="-0.01270 0.019648 0.56090"/>
+    <parent link="cobot_camera_mount_link"/>
+    <child link="cobot_camera_bracket_15deg_link"/>
+  </joint>
+  <joint name="cobot_Rigid 13" type="fixed">
+    <origin rpy="-0.0 -0.0 3.141593" xyz="0.00070 0.0610 0.25570"/>
+    <parent link="cobot_tower_link"/>
+    <child link="cobot_touchscreen_mount_link"/>
+  </joint>
+  <joint name="cobot_Rigid 14" type="fixed">
+    <origin rpy="2.356194 -0.0 3.141593" xyz="0.144498 -0.021201 0.134456"/>
+    <parent link="cobot_touchscreen_mount_link"/>
+    <child link="cobot_touchscreen_link"/>
+  </joint>
+  <joint name="cobot_Rigid 16" type="fixed">
+    <origin rpy="1.832596 -0.0 -0.0" xyz="0 -0.061639 0.019354"/>
+    <parent link="cobot_camera_bracket_15deg_link"/>
+    <child link="cobot_kinect_link"/>
+  </joint>
+</robot>
