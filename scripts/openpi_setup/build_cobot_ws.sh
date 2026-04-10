@@ -103,9 +103,11 @@ colcon build --symlink-install \
   --packages-up-to \
     openpi_kinova_ros2 \
     kinova_gen3_7dof_robotiq_2f_85_moveit_config \
+    amrl_msgs \
+    ros2_gsam2 \
   --packages-ignore \
     kortex_api kortex_driver kortex_bringup \
-    serial amrl_maps amrl_msgs kinova_vision \
+    serial amrl_maps kinova_vision \
     livox_ros_driver2 azure_kinect_ros_driver \
     moveit_resources_fanuc_moveit_config moveit_resources_panda_moveit_config \
     moveit_resources_prbt_ikfast_manipulator_plugin \

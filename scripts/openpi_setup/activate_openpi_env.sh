@@ -40,11 +40,21 @@ if [ -f "/workspace/isaaclab/cobot_ws/install/setup.bash" ]; then
     echo "✓ Sourced cobot_ws"
 fi
 
+# PYTHONPATH for manipulation pipeline (cobot_pick_v2.py, etc.). Export the whole
+# workspace so behavior matches the real robot; include src/cobot so cobot_utils resolves.
+if [ -d "/workspace/isaaclab/cobot_ws" ]; then
+    export PYTHONPATH="/workspace/isaaclab/cobot_ws:/workspace/isaaclab/cobot_ws/src/cobot:/workspace/isaaclab/cobot_ws/src/ros2_gsam2${PYTHONPATH:+:$PYTHONPATH}"
+    echo "✓ PYTHONPATH includes cobot_ws, cobot, and ros2_gsam2"
+fi
+
 echo ""
 echo "=========================================="
 echo "OpenPI Environment Ready!"
 echo "=========================================="
 echo "You can now run:"
 echo "  ros2 run openpi_kinova_ros2 openpi_kinova_direct_bridge.py --ros-args -p simulation_mode:=true ..."
+echo ""
+echo "Manipulation pipeline (uses system Python so rclpy works):"
+echo "  bash /workspace/isaaclab/scripts/openpi_setup/run_cobot_script.sh cobot_pick_v2 --query \"cup\""
 echo ""
 
