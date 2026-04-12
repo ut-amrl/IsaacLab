@@ -58,11 +58,43 @@ ros2 run openpi_kinova_ros2 openpi_kinova_direct_bridge.py \
 
 ### 5. Running IsaacSim
 
-Do *NOT* activate environments because IsaacSim runs on its own environment. 
+Isaac Sim runs inside the container as a headless process with WebRTC livestream. Do **NOT** activate the venv — Isaac Sim uses its own Python environment.
+
+**Pick an available GPU** first (check `nvidia-smi`), since GPU 0 is often in use:
 
 ```bash
-cd /workspace/isaaclab/_isaac_sim
-CUDA_VISIBLE_DEVICES=0 WG_IP=10.0.0.201 ./runheadless.sh --/app/livestream/publicEndpointAddress=$WG_IP --/app/livestream/port=49101
+# Check GPU usage on host
+nvidia-smi
+```
+
+**Interactive launch** (enter container first):
+
+```bash
+cd ~/IsaacLab/docker
+./container.py enter ros2
+# Inside container:
+CUDA_VISIBLE_DEVICES=5 /workspace/isaaclab/_isaac_sim/runheadless.sh \
+  --/app/livestream/publicEndpointAddress=10.0.0.201 \
+  --/app/livestream/port=49101
+```
+
+**Non-interactive / background launch** (for coding agents, or running without holding a shell):
+
+```bash
+cd ~/IsaacLab/docker
+./container.py exec ros2 --cmd "nohup bash -c 'CUDA_VISIBLE_DEVICES=5 /workspace/isaaclab/_isaac_sim/runheadless.sh --/app/livestream/publicEndpointAddress=10.0.0.201 --/app/livestream/port=49101 > /tmp/isaac_sim.log 2>&1' &"
+```
+
+**Important:** When using `container.py exec` without `nohup ... &`, the Isaac Sim process will die when the exec connection closes. Always background it.
+
+**Connect via web viewer:** Point your local [NVIDIA Omniverse Web Viewer](https://github.com/NVIDIA-Omniverse/web-viewer-sample) at `10.0.0.201:49101`.
+
+**Check if Isaac Sim is running:**
+
+```bash
+./container.py exec ros2 --cmd "pgrep -fa kit | head -3"
+# Or tail the log
+./container.py exec ros2 --cmd "tail -20 /tmp/isaac_sim.log"
 ```
 
 **If Isaac Sim freezes or becomes unresponsive:**
@@ -71,6 +103,8 @@ CUDA_VISIBLE_DEVICES=0 WG_IP=10.0.0.201 ./runheadless.sh --/app/livestream/publi
 # From host machine, kill all Isaac Sim processes in container
 cd ~/IsaacLab/docker
 ./container.py exec ros2 --cmd "pkill -9 -f isaac-sim"
+# Or more broadly:
+./container.py exec ros2 --cmd "pkill -9 -f kit"
 ```
 
 ### 6. Setting up Isaac Sim Scene
