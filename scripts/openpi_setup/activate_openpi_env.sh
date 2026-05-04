@@ -34,6 +34,11 @@ if [ -f "/opt/ros/humble/setup.bash" ]; then
     echo "✓ Sourced ROS2 Humble"
 fi
 
+# Isolate from other ROS2 stacks on this host (ecocar_robot publishes static TFs
+# on the default domain 0).
+export ROS_DOMAIN_ID=42
+echo "✓ ROS_DOMAIN_ID=42"
+
 # Source workspace if it exists
 if [ -f "/workspace/isaaclab/cobot_ws/install/setup.bash" ]; then
     source /workspace/isaaclab/cobot_ws/install/setup.bash

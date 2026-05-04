@@ -6,6 +6,10 @@
 services:
   # Extend the ros2 service with OpenPI additions
   isaac-lab-ros2:
+    environment:
+      # Isolate from other ROS2 stacks on this host (ecocar_robot publishes
+      # robot_static_tf on default domain 0).
+      ROS_DOMAIN_ID: "42"
     volumes:
       # Add OpenPI-specific mounts to ros2 container
       - type: bind

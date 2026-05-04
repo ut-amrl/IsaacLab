@@ -38,6 +38,7 @@ apt-get install -y -qq \
   ros-humble-shape-msgs \
   ros-humble-ros-testing \
   ros-humble-launch-param-builder \
+  xvfb \
   ros-humble-moveit-resources \
   ros-humble-moveit-resources-fanuc-moveit-config \
   ros-humble-moveit-resources-panda-moveit-config \
@@ -103,6 +104,7 @@ colcon build --symlink-install \
   --packages-up-to \
     openpi_kinova_ros2 \
     kinova_gen3_7dof_robotiq_2f_85_moveit_config \
+    moveit_ros_perception \
     amrl_msgs \
     ros2_gsam2 \
   --packages-ignore \
