@@ -4,11 +4,19 @@
 
 set -e
 
+# Ensure standard locations are on PATH (Apptainer --cleanenv / minimal shells may omit them).
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 echo "=========================================="
 echo "Building cobot_ws for OpenPI Bridge"
 echo "(Building MoveIt from source)"
 echo "=========================================="
 
+# Apptainer (and other read-only rootfs) cannot run apt against the image.
+# Set SKIP_COBOT_APT_INSTALL=1 when dependencies are already present (e.g. NGC isaac-lab).
+if [ "${SKIP_COBOT_APT_INSTALL:-0}" = "1" ]; then
+  echo "[INFO] SKIP_COBOT_APT_INSTALL=1 — skipping apt-get (read-only or pre-provisioned image)."
+else
 # Install apt dependencies for MoveIt build (idempotent - safe to run multiple times)
 echo "Installing build dependencies..."
 apt-get update -qq
@@ -47,6 +55,7 @@ apt-get install -y -qq \
   ros-humble-moveit-resources-prbt-ikfast-manipulator-plugin \
   > /dev/null 2>&1
 echo "✓ Dependencies installed"
+fi
 
 # Check if we're in the right directory
 COBOT_WS="${DOCKER_ISAACLAB_PATH:-/workspace/isaaclab}/cobot_ws"
@@ -59,7 +68,7 @@ fi
 cd "$COBOT_WS"
 
 # Make sure we're using system Python (not venv)
-if [[ "$VIRTUAL_ENV" != "" ]]; then
+if [ -n "${VIRTUAL_ENV:-}" ]; then
     echo "WARNING: Virtual environment is active. Deactivating..."
     echo "  Active venv: $VIRTUAL_ENV"
     echo "  Please run: deactivate"
@@ -67,13 +76,29 @@ if [[ "$VIRTUAL_ENV" != "" ]]; then
     exit 1
 fi
 
-# Verify system Python
-PYTHON_PATH=$(which python3)
-if [[ "$PYTHON_PATH" == *".venv"* ]]; then
-    echo "ERROR: Still using venv Python: $PYTHON_PATH"
-    echo "Please deactivate venv and try again."
+# Verify system Python (NGC Isaac Lab images ship Kit Python under Isaac Sim, not /usr/bin/python3)
+PYTHON_PATH=$(command -v python3 || true)
+if [ -z "$PYTHON_PATH" ] || [ ! -x "$PYTHON_PATH" ]; then
+    _SIM="${ISAACSIM_PATH:-/workspace/isaaclab/_isaac_sim}"
+    if [ -x "${_SIM}/kit/python/bin/python3" ]; then
+        PYTHON_PATH="${_SIM}/kit/python/bin/python3"
+    elif [ -x /isaac-sim/kit/python/bin/python3 ]; then
+        PYTHON_PATH=/isaac-sim/kit/python/bin/python3
+    elif [ -x /usr/bin/python3 ]; then
+        PYTHON_PATH=/usr/bin/python3
+    fi
+fi
+if [ -z "$PYTHON_PATH" ] || [ ! -x "$PYTHON_PATH" ]; then
+    echo "ERROR: Could not find a usable python3 for colcon (Isaac Sim Kit python expected under \${_SIM}/kit/python/bin/)."
     exit 1
 fi
+case "$PYTHON_PATH" in
+    *".venv"*)
+        echo "ERROR: Still using venv Python: $PYTHON_PATH"
+        echo "Please deactivate venv and try again."
+        exit 1
+        ;;
+esac
 
 echo "Using Python: $PYTHON_PATH"
 
@@ -87,7 +112,7 @@ else
 fi
 
 # Clean build artifacts if requested
-if [ "$1" == "--clean" ]; then
+if [ "$1" = "--clean" ]; then
     echo "Cleaning build artifacts..."
     rm -rf build/ install/ log/ .colcon_install_layout
     echo "✓ Cleaned workspace"

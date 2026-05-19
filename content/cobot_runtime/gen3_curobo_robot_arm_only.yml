@@ -1,0 +1,182 @@
+robot_cfg:
+  kinematics:
+    base_link: gen3_base_link
+    ee_link: gen3_end_effector_link
+    # Arm-only URDF (no Robotiq); same mesh layout as gen3_curobo_robot.yml. Use with Isaac
+    # --urdf .../gen3_arm_only.urdf so sim and cuRobo parse the same file.
+    urdf_path: /workspace/ros2_kortex/kortex_description/robots/gen3_arm_only.urdf
+    asset_root_path: /workspace/ros2_kortex/kortex_description/robots
+    mesh_link_names: &id001
+    - gen3_base_link
+    - gen3_shoulder_link
+    - gen3_half_arm_1_link
+    - gen3_half_arm_2_link
+    - gen3_forearm_link
+    - gen3_spherical_wrist_1_link
+    - gen3_spherical_wrist_2_link
+    - gen3_bracelet_link
+    collision_link_names: *id001
+    collision_sphere_buffer: 0.005
+    collision_spheres:
+      gen3_base_link:
+      - center:
+        - 0.0
+        - 0.0
+        - 0.1
+        radius: 0.05
+      gen3_shoulder_link:
+      - center:
+        - 0.0
+        - 0.0
+        - -0.1
+        radius: 0.06
+      - center:
+        - 0.0
+        - 0.0
+        - -0.15
+        radius: 0.05
+      gen3_half_arm_1_link:
+      - center:
+        - 0.0
+        - -0.0
+        - 0.0
+        radius: 0.055
+      - center:
+        - 0.0
+        - -0.07
+        - 0.0
+        radius: 0.055
+      - center:
+        - 0.0
+        - -0.15
+        - 0.0
+        radius: 0.055
+      gen3_half_arm_2_link:
+      - center:
+        - 0.0
+        - -0.0
+        - 0.0
+        radius: 0.055
+      - center:
+        - 0.0
+        - -0.0
+        - -0.07
+        radius: 0.055
+      - center:
+        - 0.0
+        - -0.0
+        - -0.15
+        radius: 0.055
+      - center:
+        - 0.0
+        - -0.0
+        - -0.21
+        radius: 0.055
+      gen3_forearm_link:
+      - center:
+        - 0.0
+        - -0.0
+        - 0.0
+        radius: 0.055
+      - center:
+        - 0.0
+        - -0.07
+        - -0.0
+        radius: 0.055
+      - center:
+        - 0.0
+        - -0.17
+        - -0.0
+        radius: 0.055
+      gen3_spherical_wrist_1_link:
+      - center:
+        - 0.0
+        - -0.0
+        - 0.0
+        radius: 0.055
+      - center:
+        - 0.0
+        - -0.0
+        - -0.085
+        radius: 0.055
+      gen3_spherical_wrist_2_link:
+      - center:
+        - 0.0
+        - -0.0
+        - 0.0
+        radius: 0.05
+      - center:
+        - 0.0
+        - -0.085
+        - -0.0
+        radius: 0.05
+      gen3_bracelet_link:
+      - center:
+        - 0.0
+        - -0.0
+        - -0.05
+        radius: 0.04
+      - center:
+        - 0.0
+        - -0.05
+        - -0.05
+        radius: 0.04
+    self_collision_buffer:
+      gen3_base_link: 0.0
+      gen3_shoulder_link: 0.0
+      gen3_half_arm_1_link: 0.0
+      gen3_half_arm_2_link: 0.0
+      gen3_forearm_link: 0.0
+      gen3_spherical_wrist_1_link: 0.0
+      gen3_spherical_wrist_2_link: 0.0
+      gen3_bracelet_link: 0.0
+    self_collision_ignore:
+      gen3_base_link:
+      - gen3_shoulder_link
+      gen3_shoulder_link:
+      - gen3_half_arm_1_link
+      gen3_half_arm_1_link:
+      - gen3_half_arm_2_link
+      gen3_half_arm_2_link:
+      - gen3_forearm_link
+      gen3_forearm_link:
+      - gen3_spherical_wrist_1_link
+      gen3_spherical_wrist_1_link:
+      - gen3_spherical_wrist_2_link
+      gen3_spherical_wrist_2_link:
+      - gen3_bracelet_link
+    cspace:
+      joint_names:
+      - gen3_joint_1
+      - gen3_joint_2
+      - gen3_joint_3
+      - gen3_joint_4
+      - gen3_joint_5
+      - gen3_joint_6
+      - gen3_joint_7
+      cspace_distance_weight:
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      null_space_weight:
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+      retract_config:
+      - 0.0
+      - -0.8
+      - 0.0
+      - 1.5
+      - 0.0
+      - 0.4
+      - 0.0
+      max_acceleration: 25.0
+      max_jerk: 500.0

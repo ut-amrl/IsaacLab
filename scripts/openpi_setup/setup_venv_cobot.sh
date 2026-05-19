@@ -30,6 +30,9 @@ echo "=========================================="
 echo "Setting up venv for OpenPI Kinova Bridge"
 echo "=========================================="
 
+# OpenPI upstream requires Python >=3.11 (see cobot_ws/external/openpi/pyproject.toml).
+COBOT_PY="${COBOT_PYTHON_VERSION:-3.11}"
+
 # Detect paths
 VENV_DIR="/root/.venv_cobot"
 COBOT_WS="${DOCKER_ISAACLAB_PATH:-/workspace/isaaclab}/cobot_ws"
@@ -50,6 +53,12 @@ fi
 echo "VENV_DIR: $VENV_DIR"
 echo "COBOT_WS: $COBOT_WS"
 echo "OPENPI_DIR: $OPENPI_DIR"
+
+# Bind-mounted or stale venv dirs may exist without a valid interpreter.
+if [ -d "$VENV_DIR" ] && [ ! -x "$VENV_DIR/bin/python3" ]; then
+    echo "[INFO] Clearing invalid venv at $VENV_DIR (no python3)."
+    rm -rf "${VENV_DIR:?}/"*
+fi
 
 # Check if uv is installed, install if missing
 if ! command -v uv &> /dev/null; then
@@ -88,8 +97,7 @@ export UV_PROJECT_ENVIRONMENT="$VENV_DIR"
 export UV_LINK_MODE=copy
 export GIT_LFS_SKIP_SMUDGE=1
 
-# Create venv directory if it doesn't exist
-mkdir -p "$VENV_DIR"
+# Do not mkdir "$VENV_DIR" before `uv sync` — an empty directory makes uv treat it as a broken env.
 
 # Change to openpi directory
 cd "$OPENPI_DIR"
@@ -97,14 +105,14 @@ cd "$OPENPI_DIR"
 echo ""
 echo "Installing OpenPI dependencies with uv sync..."
 UV_SYNC_SUCCESS=true
-if ! uv sync --no-install-project --python 3.10 --no-dev; then
+if ! uv sync --no-install-project --python "$COBOT_PY" --no-dev; then
     UV_SYNC_SUCCESS=false
     echo "WARNING: uv sync encountered errors. This may be due to torch==2.7.1 compatibility issues."
     echo "Attempting to continue with manual installation..."
     # Try to create venv manually if uv sync failed
     if [ ! -f "$VENV_DIR/bin/python3" ]; then
         echo "Creating venv manually..."
-        uv venv "$VENV_DIR" --python 3.10
+        UV_VENV_CLEAR=1 uv venv "$VENV_DIR" --python "$COBOT_PY"
     fi
     # Install core dependencies manually (excluding torch which we'll install separately)
     echo "Installing core dependencies manually..."
@@ -131,8 +139,8 @@ VENV_PYTHON="$VENV_DIR/bin/python3"
 if [ -f "$VENV_PYTHON" ]; then
     PYV=$("$VENV_PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 else
-    # Fallback to 3.10 if venv python doesn't exist yet
-    PYV="3.10"
+    # Fallback if venv python doesn't exist yet
+    PYV="$COBOT_PY"
 fi
 
 echo ""
@@ -201,9 +209,14 @@ fi
 
 echo ""
 echo "Installing roboticstoolbox for kinematics (FK/IK)..."
-if command -v uv &> /dev/null; then
-    uv pip install --python "$VENV_PYTHON" roboticstoolbox-python spatialmath-python || \
-    "$VENV_PYTHON" -m pip install roboticstoolbox-python spatialmath-python
+if [ "${SKIP_ROBOTICSTOOLBOX:-0}" = "1" ]; then
+    echo "[WARN] SKIP_ROBOTICSTOOLBOX=1 — skipping roboticstoolbox-python / spatialmath-python."
+    echo "  Install on a machine with a C toolchain (e.g. full Docker image) or use a prebuilt wheel."
+elif command -v uv &> /dev/null; then
+    if ! uv pip install --python "$VENV_PYTHON" roboticstoolbox-python spatialmath-python; then
+        echo "ERROR: roboticstoolbox install failed (often missing gcc). Set SKIP_ROBOTICSTOOLBOX=1 on Apptainer/read-only images or install build-essential."
+        exit 1
+    fi
 else
     "$VENV_PYTHON" -m pip install roboticstoolbox-python spatialmath-python
 fi
@@ -216,11 +229,11 @@ echo ""
 echo "Next steps:"
 echo ""
 echo "1. Build the ROS2 workspace (if not already built):"
-echo "   bash /workspace/isaaclab/docker/build_cobot_ws.sh"
+echo "   bash /workspace/isaaclab/scripts/openpi_setup/build_cobot_ws.sh"
 echo "   (Use --clean flag to rebuild from scratch)"
 echo ""
 echo "2. Activate OpenPI environment:"
-echo "   source /workspace/isaaclab/docker/activate_openpi_env.sh"
+echo "   source /workspace/isaaclab/scripts/openpi_setup/activate_openpi_env.sh"
 echo ""
 echo "This will:"
 echo "  - Activate the venv"
