@@ -14,6 +14,27 @@ from typing import Any
 from .state_file import StateFile
 
 
+def resolve_container_cli() -> str | None:
+    """Resolve the container engine executable (Docker or Podman).
+
+    Resolution order (risk-averse defaults):
+
+    1. ``ISAACLAB_CONTAINER_CLI`` if set to an absolute executable path, or a name found on ``PATH``.
+    2. ``docker`` on ``PATH`` (preserves existing behavior for all standard installs).
+    3. ``podman`` on ``PATH`` (drop-in for sites that ship Podman without a ``docker`` shim).
+
+    Returns:
+        Absolute path to the container CLI, or None if nothing usable was found.
+    """
+    env_cli = os.environ.get("ISAACLAB_CONTAINER_CLI", "").strip()
+    if env_cli:
+        if os.path.isabs(env_cli) and os.path.isfile(env_cli) and os.access(env_cli, os.X_OK):
+            return env_cli
+        which = shutil.which(env_cli)
+        return which
+    return shutil.which("docker") or shutil.which("podman")
+
+
 class ContainerInterface:
     """A helper class for managing Isaac Lab containers."""
 
@@ -25,6 +46,7 @@ class ContainerInterface:
         envs: list[str] | None = None,
         statefile: StateFile | None = None,
         suffix: str | None = None,
+        container_cli: str | None = None,
     ):
         """Initialize the container interface with the given parameters.
 
@@ -48,6 +70,9 @@ class ContainerInterface:
                 suffix is set to the empty string. A hyphen is inserted in between the profile and the suffix if
                 the suffix is a nonempty string.  For example, if "base" is passed to profile, and "custom" is
                 passed to suffix, then the produced docker image and container will be named ``isaac-lab-base-custom``.
+            container_cli:
+                Path to the ``docker`` or ``podman`` binary. Defaults to None, in which case
+                :func:`resolve_container_cli` is used (``ISAACLAB_CONTAINER_CLI``, then ``docker``, then ``podman``).
         """
         # set the context directory
         self.context_dir = context_dir
@@ -85,6 +110,13 @@ class ContainerInterface:
         self.environ = os.environ.copy()
         self.environ["DOCKER_NAME_SUFFIX"] = self.suffix
 
+        self.container_cli = container_cli if container_cli is not None else resolve_container_cli()
+        if not self.container_cli:
+            raise RuntimeError(
+                "Could not resolve a container engine. Install Docker or Podman, or set ISAACLAB_CONTAINER_CLI "
+                "to the full path of the executable (e.g. /usr/bin/podman)."
+            )
+
         # detect if we're using podman-compose
         self._detect_compose_command()
 
@@ -101,6 +133,7 @@ class ContainerInterface:
 
         print(f"{'Profile:':25} {self.profile}")
         print(f"{'Suffix:':25} {self.suffix}")
+        print(f"{'Container engine:':25} {self.container_cli}")
         print(f"{'Service Name:':25} {self.service_name}")
         print(f"{'Image Name:':25} {self.image_name}")
         print(f"{'Container Name:':25} {self.container_name}")
@@ -124,7 +157,7 @@ class ContainerInterface:
             True if the container is running, otherwise False.
         """
         status = subprocess.run(
-            ["docker", "container", "inspect", "-f", "{{.State.Status}}", self.container_name],
+            [self.container_cli, "container", "inspect", "-f", "{{.State.Status}}", self.container_name],
             capture_output=True,
             text=True,
             check=False,
@@ -137,7 +170,7 @@ class ContainerInterface:
         Returns:
             True if the image exists, otherwise False.
         """
-        result = subprocess.run(["docker", "image", "inspect", self.image_name], capture_output=True, text=True)
+        result = subprocess.run([self.container_cli, "image", "inspect", self.image_name], capture_output=True, text=True)
         return result.returncode == 0
 
     def build(self):
@@ -145,7 +178,7 @@ class ContainerInterface:
         print("[INFO] Building the docker image for the profile 'base'...\n")
         # build the image for the base profile
         cmd = (
-            ["docker", "compose"]
+            [self.container_cli, "compose"]
             + ["--file", "docker-compose.yaml"]
             + ["--profile", "base"]
             + ["--env-file", ".env.base"]
@@ -158,7 +191,7 @@ class ContainerInterface:
         if self.profile != "base":
             print(f"[INFO] Building the docker image for the profile '{self.profile}'...\n")
             cmd = (
-                ["docker", "compose"]
+                [self.container_cli, "compose"]
                 + self.add_yamls
                 + self.add_profiles
                 + self.add_env_files
@@ -185,7 +218,7 @@ class ContainerInterface:
                 # For podman, specify the base service directly
                 subprocess.run(
                     [
-                        "docker",
+                        self.container_cli,
                         "compose",
                         "--file",
                         "docker-compose.yaml",
@@ -202,7 +235,7 @@ class ContainerInterface:
                 # For docker compose, use profiles
                 subprocess.run(
                     [
-                        "docker",
+                        self.container_cli,
                         "compose",
                         "--file",
                         "docker-compose.yaml",
@@ -223,7 +256,7 @@ class ContainerInterface:
             # For podman-compose, specify the service name directly
             subprocess.run(
                 [
-                    "docker",
+                    self.container_cli,
                     "compose"
                 ]
                 + self.add_yamls
@@ -242,7 +275,7 @@ class ContainerInterface:
         else:
             # For docker compose, use profiles
             subprocess.run(
-                ["docker", "compose"]
+                [self.container_cli, "compose"]
                 + self.add_yamls
                 + self.add_profiles
                 + self.add_env_files
@@ -265,7 +298,7 @@ class ContainerInterface:
 
         # Check if container exists (even if stopped)
         result = subprocess.run(
-            ["docker", "container", "inspect", "-f", "{{.State.Status}}", self.container_name],
+            [self.container_cli, "container", "inspect", "-f", "{{.State.Status}}", self.container_name],
             capture_output=True,
             text=True,
             check=False,
@@ -286,7 +319,7 @@ class ContainerInterface:
             # For podman-compose, use the service name
             subprocess.run(
                 [
-                    "docker",
+                    self.container_cli,
                     "compose"
                 ]
                 + self.add_yamls
@@ -302,7 +335,7 @@ class ContainerInterface:
         else:
             # For docker compose, use profiles
             subprocess.run(
-                ["docker", "compose"]
+                [self.container_cli, "compose"]
                 + self.add_yamls
                 + self.add_profiles
                 + self.add_env_files
@@ -345,7 +378,7 @@ class ContainerInterface:
         print(f"[INFO] Executing command in '{self.container_name}': {cmd_display}\n")
         
         # Build the docker exec command
-        exec_cmd = ["docker", "exec"]
+        exec_cmd = [self.container_cli, "exec"]
         
         # Add DISPLAY environment variable if available (for GUI apps)
         if "DISPLAY" in os.environ:
@@ -376,7 +409,7 @@ class ContainerInterface:
         if self.is_container_running():
             print(f"[INFO] Entering the existing '{self.container_name}' container in a bash session...\n")
             cmd = (
-                ["docker", "exec", "--interactive", "--tty"]
+                [self.container_cli, "exec", "--interactive", "--tty"]
                 + (["-e", f"DISPLAY={os.environ['DISPLAY']}"] if "DISPLAY" in os.environ else [])
                 + [self.container_name, "bash"]
             )
@@ -391,7 +424,7 @@ class ContainerInterface:
             if self.is_podman and self.service_name:
                 # For podman-compose, specify the service name directly
                 subprocess.run(
-                    ["docker", "compose"] + self.add_yamls + self.add_env_files + ["down", "--volumes", self.service_name],
+                    [self.container_cli, "compose"] + self.add_yamls + self.add_env_files + ["down", "--volumes", self.service_name],
                     check=False,
                     cwd=self.context_dir,
                     env=self.environ,
@@ -399,7 +432,7 @@ class ContainerInterface:
             else:
                 # For docker compose, use profiles
                 subprocess.run(
-                    ["docker", "compose"] + self.add_yamls + self.add_profiles + self.add_env_files + ["down", "--volumes"],
+                    [self.container_cli, "compose"] + self.add_yamls + self.add_profiles + self.add_env_files + ["down", "--volumes"],
                     check=False,
                     cwd=self.context_dir,
                     env=self.environ,
@@ -407,7 +440,8 @@ class ContainerInterface:
         else:
             print(
                 f"[INFO] Can't stop container '{self.container_name}' as it is not running."
-                " To check if the container is running, run 'docker ps' or 'docker container ls'.\n"
+                f" To check if the container is running, run '{Path(self.container_cli).name} ps' or"
+                f" '{Path(self.container_cli).name} container ls'.\n"
             )
 
     def copy(self, output_dir: Path | None = None):
@@ -446,7 +480,7 @@ class ContainerInterface:
 
             # copy the artifacts
             for container_path, host_path in artifacts.items():
-                cmd = ["docker", "cp", f"{self.container_name}:{container_path}/", host_path]
+                cmd = [self.container_cli, "cp", f"{self.container_name}:{container_path}/", host_path]
                 subprocess.run(cmd, check=False, cwd=self.context_dir, env=self.environ)
             print("\n[INFO] Finished copying the artifacts from the container.")
         else:
@@ -474,7 +508,7 @@ class ContainerInterface:
         if self.is_podman:
             # For podman-compose, don't use profiles
             subprocess.run(
-                ["docker", "compose"] + self.add_yamls + self.add_env_files + ["config"] + output,
+                [self.container_cli, "compose"] + self.add_yamls + self.add_env_files + ["config"] + output,
                 check=False,
                 cwd=self.context_dir,
                 env=self.environ,
@@ -482,7 +516,7 @@ class ContainerInterface:
         else:
             # For docker compose, use profiles
             subprocess.run(
-                ["docker", "compose"] + self.add_yamls + self.add_profiles + self.add_env_files + ["config"] + output,
+                [self.container_cli, "compose"] + self.add_yamls + self.add_profiles + self.add_env_files + ["config"] + output,
                 check=False,
                 cwd=self.context_dir,
                 env=self.environ,
@@ -494,16 +528,16 @@ class ContainerInterface:
 
     def _detect_compose_command(self):
         """Detect whether we're using docker compose or podman-compose and set appropriate flags."""
-        # Check if we're using podman-compose by running docker compose version
         try:
             result = subprocess.run(
-                ["docker", "compose", "version"],
+                [self.container_cli, "compose", "version"],
                 capture_output=True,
                 text=True,
-                check=False
+                check=False,
             )
-            # If the output contains "podman-compose", we're using podman
-            self.is_podman = "podman-compose" in result.stderr.lower()
+            combined = ((result.stdout or "") + (result.stderr or "")).lower()
+            cli_name = Path(self.container_cli).name.lower()
+            self.is_podman = cli_name.startswith("podman") or "podman-compose" in combined
         except (subprocess.SubprocessError, FileNotFoundError):
             # Fallback: assume docker if we can't determine
             self.is_podman = False

@@ -10,9 +10,11 @@ cd ~/IsaacLab/docker
 # First time: Build and start ros2 container with OpenPI extensions
 ./container.py start ros2 --files docker-compose.openpi.yaml --env-files .env.openpi
 
-# After first build: Restart without rebuilding (much faster!)`
+# After first build: Restart without rebuilding (much faster!)
 ./container.py restart ros2 --files docker-compose.openpi.yaml --env-files .env.openpi
 ```
+
+If you use an **NGC Apptainer `.sif`** instead of Docker (e.g. on NCSA Delta), skip `container.py` and follow **[Apptainer (NGC) without Docker](#apptainer-ngc-without-docker)** after your SIF is built, then continue with **§3 One-Time Setup** using the same paths inside the image (`/workspace/isaaclab/...`).
 
 The `start` command:
 - Builds the image and starts the `isaac-lab-ros2` container
@@ -23,7 +25,89 @@ The `start` command:
 
 The `restart` command starts an existing stopped container without rebuilding (use this for daily work).
 
-### 2. Enter Container
+### Optional environment variables (same defaults if unset)
+
+- **`ISAACLAB_CONTAINER_CLI`**: Full path or `PATH` name of the container engine. If unset, `container.py` uses **`docker`** when present, otherwise **`podman`**. Use this when Podman is installed under a non-standard name or path.
+- **`ISAACLAB_DISABLE_X11_PROMPT=1`**: Skip the interactive X11 question and disable X11 forwarding for this run (saves the choice to `.container.cfg`). Use for batch jobs, CI, or SSH without a TTY. Omit for normal interactive behavior.
+
+**Apptainer NGC pull (Delta):** Slurm **always** requires a **walltime** (`#SBATCH -t` or `srun -t`); there is no “unlimited.” Check caps with `sinfo -h -p PARTITION -o '%P %l %L'` (`%l` = max, `%L` = default). On Delta, **`gpuA100x4-interactive` max is `01:00:00`** — anything longer (e.g. `1:15:00` or `2-00:00:00`) is rejected. Use **`-t 01:00:00`** (or less) for that partition, or run a **long pull via `sbatch`** on **`gpuA100x4`** (batch max is typically **2 days**). Enough **RAM** (`--mem`, e.g. `128G`) helps **`mksquashfs`** avoid OOM. Batch script: [`docker/cluster/pull_ngc_isaac_lab.slurm`](cluster/pull_ngc_isaac_lab.slurm). Example interactive shell (1 h cap): `srun -A bger-delta-gpu -p gpuA100x4-interactive --gpus-per-node=1 --mem=128G -t 01:00:00 --pty bash` — then `export` / `mkdir` / `apptainer pull` on **separate lines** (or use `;`).
+
+## Apptainer (NGC) without Docker
+
+Use this flow when you have a local **`isaac-lab_*.sif`** (from `apptainer pull` or [`cluster/pull_ngc_isaac_lab.slurm`](cluster/pull_ngc_isaac_lab.slurm)) and **no** Docker/Podman. Isaac Sim inside the image lives under `/workspace/isaaclab/_isaac_sim`; do **not** bind-mount your whole host `IsaacLab` tree on top of `/workspace/isaaclab` or you will hide `_isaac_sim`. Overlay only the subtrees you edit, mirroring [`docker-compose.yaml`](docker-compose.yaml) and [`docker-compose.openpi.yaml`](docker-compose.openpi.yaml).
+
+### Locate the SIF
+
+- Batch pull (this repo’s Slurm script): **`../.sifs/isaac-lab_<VERSION>.sif`** next to your `IsaacLab` directory (e.g. `~/cobot2/.sifs/isaac-lab_2.3.2.sif`).
+- Interactive pull to `/tmp`: copy the `.sif` somewhere persistent under `$HOME` or `cobot2/.sifs/` before the node is reclaimed.
+
+### Enter the image (GPU node)
+
+Set `ISAACLAB_HOST` to the **absolute** path of your **host** `IsaacLab` clone (the directory that contains `source/`, `scripts/`, `docker/`, …). Adjust `SIF` to your file name.
+
+```bash
+export ISAACLAB_HOST="${HOME}/cobot2/IsaacLab"   # example; use your real path
+export SIF="${ISAACLAB_HOST}/../.sifs/isaac-lab_2.3.2.sif"
+
+apptainer exec --nv --cleanenv \
+  --env ISAACSIM_PATH=/workspace/isaaclab/_isaac_sim \
+  --env OMNI_KIT_ALLOW_ROOT=1 \
+  --env ROS_DOMAIN_ID=42 \
+  -B "${ISAACLAB_HOST}/source:/workspace/isaaclab/source" \
+  -B "${ISAACLAB_HOST}/scripts:/workspace/isaaclab/scripts" \
+  -B "${ISAACLAB_HOST}/docs:/workspace/isaaclab/docs" \
+  -B "${ISAACLAB_HOST}/tools:/workspace/isaaclab/tools" \
+  -B "${ISAACLAB_HOST}/docker:/workspace/isaaclab/docker" \
+  -B "${ISAACLAB_HOST}/isaaclab.sh:/workspace/isaaclab/isaaclab.sh" \
+  -B "${ISAACLAB_HOST}/VERSION:/workspace/isaaclab/VERSION" \
+  -B "${ISAACLAB_HOST}/pyproject.toml:/workspace/isaaclab/pyproject.toml" \
+  -B "${ISAACLAB_HOST}/README.md:/workspace/isaaclab/README.md" \
+  -B "${HOME}/cobot_ws:/workspace/isaaclab/cobot_ws" \
+  -B "${HOME}/.venv_cobot:/root/.venv_cobot" \
+  -B "${ISAACLAB_HOST}/content:/workspace/isaaclab/content" \
+  "$SIF" bash -lc 'cd /workspace/isaaclab && exec bash'
+```
+
+Notes:
+
+- **`cobot_ws` / `.venv_cobot`**: create empty dirs on the host if needed (`mkdir -p`) before first run.
+- **OpenPI checkout (required for §3):** `setup_venv_cobot.sh` expects **`$HOME/cobot_ws/external/openpi`**. One-time:  
+  `mkdir -p "$HOME/cobot_ws/external" && git clone https://github.com/Physical-Intelligence/openpi.git "$HOME/cobot_ws/external/openpi"`
+- **`content/`**: if that directory is empty on the host, the bind hides the image’s default content; only bind it once you have `stage-19.usd` and related assets there (see **§6**).
+- **`uv` on the host:** if you use `--cleanenv`, bind your host uv into the container, e.g. **`-B "${HOME}/.local:/root/.local"`**, and `export PATH="/root/.local/bin:$PATH"` before running setup.
+- **Extra compose binds** (e.g. checkpoint path in `docker-compose.openpi.yaml`): add matching `-B host:container` lines.
+- For an interactive GPU allocation, wrap the same command in `srun ... apptainer exec ...`.
+- **ROS2 vs NGC `isaac-lab` SIF:** the stock **`nvcr.io/nvidia/isaac-lab`** image used for pulls often has **Isaac Sim + Lab but no `/opt/ros/humble`**, so **`build_cobot_ws.sh` will fail** until you use an image that includes ROS2 (for example the **`isaac-lab-ros2`** image built from this repo’s [`Dockerfile.ros2`](../Dockerfile.ros2) via Docker/Podman, then converted to a `.sif` if needed), or you add ROS another way. **`setup_venv_cobot.sh`** can still run for Python/OpenPI.
+- **Apptainer-friendly env vars (optional):**  
+  - `export SKIP_ROBOTICSTOOLBOX=1` before **`setup_venv_cobot.sh`** if the image has **no C compiler** (avoids building `roboticstoolbox-python` from source; install it later on a machine with `build-essential` if you need FK/IK helpers).  
+  - `export SKIP_COBOT_APT_INSTALL=1` before **`build_cobot_ws.sh`** when **`apt-get` is not possible** (read-only rootfs in Apptainer).
+
+Once you have a shell at `/workspace/isaaclab`, continue with **[§3 One-Time Setup](#3-one-time-setup-inside-container)** and later sections.
+
+### Sim-only smoke jobs (CuRobo prep, no ROS / OpenPI)
+
+**CuRobo in Isaac Lab** uses the Isaac Lab / Isaac Sim Python stack ([`CuroboPlanner`](../source/isaaclab_mimic/isaaclab_mimic/motion_planners/curobo/curobo_planner.py)); you do **not** need ROS2, `cobot_ws`, or the OpenPI venv for these headless checks.
+
+Slurm **`#SBATCH --export=NONE,ISAACLAB_SIF,COBOT_USD,COBOT_LOAD_MODE,COBOT_URDF_HOST`** clears the submit-shell environment (which otherwise can trigger **`mkdir /var/spool/docker`** from Apptainer/NVIDIA hooks on Delta) while still letting you override the SIF, load mode, URDF path, or pre-baked USD. To override **`SCRATCH`**, pass it on the **`sbatch`** command line, for example **`sbatch --export=NONE,ISAACLAB_SIF,COBOT_USD,COBOT_LOAD_MODE,COBOT_URDF_HOST,SCRATCH=/scratch/bger/$USER smoke_sim_empty.slurm`**, because it is intentionally **not** re-exported from the parent shell by default.
+
+Batch scripts are copied under **`/var/spool/slurmd/`**; **`smoke_delta_holosoma_env.sh`** is sourced via **`SLURM_SUBMIT_DIR`** (the directory you were in when you ran **`sbatch`**), so always submit from **`IsaacLab/docker/cluster`** (or pass a wrapper that **`cd`** there first). Shared host setup and Omniverse/Kit scratch binds match holosoma-kick; see [`cluster/smoke_delta_holosoma_env.sh`](cluster/smoke_delta_holosoma_env.sh).
+
+| Job | Slurm script | Python entry |
+|-----|----------------|----------------|
+| Empty stage | [`cluster/smoke_sim_empty.slurm`](cluster/smoke_sim_empty.slurm) | [`scripts/tutorials/00_sim/create_empty.py`](../scripts/tutorials/00_sim/create_empty.py) |
+| Table + blue cuboid | [`cluster/smoke_sim_table_cuboid.slurm`](cluster/smoke_sim_table_cuboid.slurm) | [`scripts/tutorials/00_sim/spawn_table_blue_cuboid.py`](../scripts/tutorials/00_sim/spawn_table_blue_cuboid.py) |
+| Load cobot (URDF→USD) | [`cluster/smoke_sim_load_cobot.slurm`](cluster/smoke_sim_load_cobot.slurm) | [`scripts/tutorials/00_sim/load_cobot_stage.py`](../scripts/tutorials/00_sim/load_cobot_stage.py) — default **`COBOT_LOAD_MODE=urdf`**: converts **`${COBOT2_ROOT}/ros2_kortex/...`** to **`content/cobot_runtime/cobot.usd`**, also spawns **Nucleus Seattle lab table + blue deformable cuboid** beside the robot (same as [`spawn_table_blue_cuboid.py`](../scripts/tutorials/00_sim/spawn_table_blue_cuboid.py); pass **`--no-table-cuboid`** to skip). **`COBOT_LOAD_MODE=usd`** loads a pre-baked USD only. CuRobo naming: [`COBOT_CUROBO_REFERENCE.md`](../scripts/tutorials/00_sim/COBOT_CUROBO_REFERENCE.md). |
+
+```bash
+cd /path/to/IsaacLab/docker/cluster
+sbatch smoke_sim_empty.slurm
+sbatch smoke_sim_table_cuboid.slurm
+sbatch smoke_sim_load_cobot.slurm
+```
+
+Each job requests **30 minutes**, **1× GPU**, **64 G RAM** on **`gpuA100x4`**. Scripts run **`./isaaclab.sh -p … --headless`** inside Apptainer until walltime (infinite sim loop). Submit **table** after **empty** if you want Nucleus warmed up. For **cobot**, clone **[`ut-amrl/ros2_kortex`](https://github.com/ut-amrl/ros2_kortex)** under **`cobot2/ros2_kortex`** (branch **`cobot-urdf`** for full cobot geometry) so the Slurm script can bind it and find the default URDF; or set **`COBOT_URDF_HOST`** to a resolved **`.urdf`** under that tree before **`sbatch`**. Install **[Git LFS](https://git-lfs.com/)** (`git lfs install` once per account). For **STL meshes** in `ros2_kortex`, run **`git lfs pull`** in that clone. For **Isaac Lab `content/*.usd`** (Kinova articulation scenes, etc.), from the **IsaacLab** repo root run **`bash scripts/pull_kinova_usd_lfs.sh`** (narrow LFS pull; optional **`ISAACLAB_LFS_PULL_CONTENT=1`** for all `content/**/*.usd`). See [`scripts/tutorials/00_sim/COBOT_CUROBO_REFERENCE.md`](../scripts/tutorials/00_sim/COBOT_CUROBO_REFERENCE.md).
+
+### 2. Enter Container (Docker / Podman)
 
 ```bash
 cd ~/IsaacLab/docker
@@ -39,6 +123,8 @@ bash /workspace/isaaclab/scripts/openpi_setup/setup_venv_cobot.sh
 # Build ROS2 packages
 bash /workspace/isaaclab/scripts/openpi_setup/build_cobot_ws.sh
 ```
+
+**Apptainer / read-only rootfs (typical on cluster SIFs):** before the scripts, run `export SKIP_ROBOTICSTOOLBOX=1` (no `gcc` → skip `roboticstoolbox-python` compile) and `export SKIP_COBOT_APT_INSTALL=1` (skip `apt-get`). **`build_cobot_ws.sh` still requires `/opt/ros/humble` inside the image** — the stock NGC `isaac-lab` pull may not include ROS2; use a ROS-enabled image (e.g. build [`Dockerfile.ros2`](../Dockerfile.ros2) with Docker, then convert to `.sif` if you must stay on Apptainer-only).
 
 **Note**: The `setup_venv_cobot.sh` script will automatically install `uv` if it's not already present in the container.
 

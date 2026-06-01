@@ -85,23 +85,29 @@ def x11_check(statefile: StateFile) -> tuple[list[str], dict[str, str]] | None:
     is_x11_forwarding_enabled = statefile.get_variable("X11_FORWARDING_ENABLED")
 
     if is_x11_forwarding_enabled is None:
-        print("[INFO] X11 forwarding from the Isaac Lab container is disabled by default.")
-        print(
-            "[INFO] It will fail if there is no display, or this script is being run via ssh without proper"
-            " configuration."
-        )
-        x11_answer = input("Would you like to enable it? (y/N) ")
-
-        # parse the user's input
-        if x11_answer.lower() == "y":
-            is_x11_forwarding_enabled = "1"
-            print("[INFO] X11 forwarding is enabled from the container.")
-        else:
+        if os.environ.get("ISAACLAB_DISABLE_X11_PROMPT") == "1":
+            # Opt-in: non-interactive sessions (batch jobs, CI) without a prior .container.cfg answer
+            print("[INFO] ISAACLAB_DISABLE_X11_PROMPT=1: disabling X11 forwarding without prompting.")
             is_x11_forwarding_enabled = "0"
-            print("[INFO] X11 forwarding is disabled from the container.")
+            statefile.set_variable("X11_FORWARDING_ENABLED", is_x11_forwarding_enabled)
+        else:
+            print("[INFO] X11 forwarding from the Isaac Lab container is disabled by default.")
+            print(
+                "[INFO] It will fail if there is no display, or this script is being run via ssh without proper"
+                " configuration."
+            )
+            x11_answer = input("Would you like to enable it? (y/N) ")
 
-        # remember the user's choice and set the statefile variable
-        statefile.set_variable("X11_FORWARDING_ENABLED", is_x11_forwarding_enabled)
+            # parse the user's input
+            if x11_answer.lower() == "y":
+                is_x11_forwarding_enabled = "1"
+                print("[INFO] X11 forwarding is enabled from the container.")
+            else:
+                is_x11_forwarding_enabled = "0"
+                print("[INFO] X11 forwarding is disabled from the container.")
+
+            # remember the user's choice and set the statefile variable
+            statefile.set_variable("X11_FORWARDING_ENABLED", is_x11_forwarding_enabled)
     else:
         # print the current configuration
         print(f"[INFO] X11 Forwarding is configured as '{is_x11_forwarding_enabled}' in '.container.cfg'.")

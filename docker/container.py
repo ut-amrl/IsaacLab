@@ -6,10 +6,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import argparse
-import shutil
 from pathlib import Path
 
 from utils import ContainerInterface, x11_utils
+from utils.container_interface import resolve_container_cli
 
 
 def parse_cli_args() -> argparse.Namespace:
@@ -120,10 +120,11 @@ def parse_cli_args() -> argparse.Namespace:
 
 def main(args: argparse.Namespace):
     """Main function for the Docker utility."""
-    # check if docker is installed
-    if not shutil.which("docker"):
+    cli = resolve_container_cli()
+    if not cli:
         raise RuntimeError(
-            "Docker is not installed! Please check the 'Docker Guide' for instruction: "
+            "No container engine found. Install Docker or Podman, or set ISAACLAB_CONTAINER_CLI to the "
+            "executable path or name (e.g. /usr/bin/podman). See: "
             "https://isaac-sim.github.io/IsaacLab/source/deployment/docker.html"
         )
 
@@ -134,13 +135,14 @@ def main(args: argparse.Namespace):
         yamls=args.files,
         envs=args.env_files,
         suffix=args.suffix,
+        container_cli=cli,
     )
     if args.info:
         print("[INFO] Printing container interface information...\n")
         ci.print_info()
         return
 
-    print(f"[INFO] Using container profile: {ci.profile}")
+    print(f"[INFO] Using container profile: {ci.profile} (engine: {cli})")
     if args.command == "build":
         # check if x11 forwarding is enabled
         x11_outputs = x11_utils.x11_check(ci.statefile)
