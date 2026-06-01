@@ -1,6 +1,48 @@
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
-"""Isaac Lab + cuRobo MPC: track a point above a blue visual marker centroid while the marker oscillates A/B."""
+"""Isaac Lab + cuRobo MPC: track a point above a blue visual marker centroid while the marker oscillates A/B.
+
+Reuses the cobot stage scene (USD/URDF; optional Seattle lab table; blue visual-only cuboid marker) from
+``load_cobot_stage.py``. Use ``--simple-cuboid-mpc`` for marker-only Isaac geometry and a
+floor-only cuRobo world (no table MPC proxies; no cuboid collision proxy), with the EE goal at the marker centroid.
+
+Every ``--cuboid-displace-interval-s`` (default 10 s) sim time the marker root advances along a closed
+world-frame waypoint cycle **A → B → C → D → A** (four positions). **C** is **A** with **x,y negated**
+(same ``z``); **D** is **B** likewise. ``--cuboid-displace-range-m`` is unused (reserved).
+cuRobo ``MpcSolver`` runs each control cycle with a pose
+goal in the robot base frame. Logs ``t_sim_s,dist_m`` every ``--log-interval-s`` (default 0.3 s),
+where ``dist_m`` is the Euclidean distance between the EE link and the marker centroid (world).
+
+Optional ``--cuboid-in-ik-success-aabb`` moves the blue cuboid centroid into a fixed axis-aligned box
+in **robot base frame** (from ``curobo_ik_gen3_feasible_ee_sample.py`` successes: ``mpc_proxies``,
+±1 m half-extent around retract, job 18150069), converted to world after the articulation exists.
+
+**Controller stack (this script)**:
+
+1. **Outer / high-level controller**: NVIDIA cuRobo ``MpcSolver`` (MPPI). Each sim step it reads measured
+   joint positions, optimizes, and outputs a reference joint trajectory slice as ``js_action``.
+2. **Inner / low-level controller**: Isaac Lab ``ImplicitActuatorCfg`` (PD position control on the
+   articulation). ``set_joint_position_target`` sets the reference; PhysX tracks it with the
+   configured stiffness/damping. Optional ``--enable-gravity-compensation`` (default: on) adds
+   feed-forward torques via ``root_physx_view.get_gravity_compensation_forces()`` and
+   ``set_joint_effort_target`` on the MPC arm joints (ImplicitActuator PD + effort term).
+
+Errors can appear in either layer (infeasible MPC, NaNs, wrong joint mapping, missing
+``write_data_to_sim``, bad frames, etc.). Use ``--diag-extended-csv`` and ``--diag-every-n-steps``
+to separate MPC quality from sim tracking.
+
+Optional ``--record-cobot-video`` (with ``--enable_cameras``) captures RGB from a world camera
+(default eye ``(-4,0,4)`` m, target ``(0.6,0.4,1.1)`` m) to ``mpc_cuboid_track.mp4`` under
+``--record-video-out-dir/<run_id>/`` (use ``docker/logs/...`` on cluster).
+
+Example (container paths)::
+
+    ./isaaclab.sh -p scripts/tutorials/00_sim/load_cobot_mpc_cuboid_track.py --headless \\
+        --robot-yml /workspace/isaaclab/content/cobot_runtime/gen3_curobo_robot.yml \\
+        --urdf /workspace/ros2_kortex/kortex_description/robots/gen3_2f85.urdf \\
+        --usd-out /workspace/isaaclab/content/cobot_runtime/cobot.usd \\
+        --max-sim-time-s 25
+"""
 
 from __future__ import annotations
 
@@ -8,6 +50,7 @@ import argparse
 import math
 import os
 import random
+import tempfile
 import sys
 import traceback
 from pathlib import Path
@@ -39,6 +82,16 @@ parser.add_argument(
 parser.add_argument("--joint-stiffness", type=float, default=400.0)
 parser.add_argument("--joint-damping", type=float, default=40.0)
 parser.add_argument(
+    "--enable-gravity-compensation",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help=(
+        "Feed-forward gravity torques on MPC arm joints using PhysX "
+        "get_gravity_compensation_forces (ImplicitActuator effort term). "
+        "Use --no-enable-gravity-compensation to disable."
+    ),
+)
+parser.add_argument(
     "--joint-target-type",
     type=str,
     default="position",
@@ -49,9 +102,9 @@ parser.add_argument(
     "--simple-cuboid-mpc",
     action="store_true",
     help=(
-        "Phase-A-style diagnostic: spawn blue visual cuboid marker only (no Seattle table); "
-        "MPC world is floor slab only (no table proxies); "
-        "goal uses marker centroid with zero --above-z-m offset."
+        "Spawn blue visual cuboid marker only in Isaac (no Seattle table). "
+        "cuRobo MPC world: floor slab + obstacle spheres (no table_proxy cuboid). "
+        "Goal uses marker centroid with zero --above-z-m offset."
     ),
 )
 parser.add_argument("--cuboid-centroid-prim", type=str, default="/World/Objects/CuboidMarker")
@@ -130,10 +183,21 @@ parser.add_argument(
     help="RNG seed for --cuboid-in-ik-success-aabb sampling (default 0 = reproducible).",
 )
 parser.add_argument(
+    "--randomize-scene-positions",
+    action="store_true",
+    help="Randomize obstacle sphere centers and A/B waypoints inside IK-feasible workspace.",
+)
+parser.add_argument(
     "--random-scene-seed",
     type=int,
     default=0,
-    help="Global RNG seed for scene randomization (auto-set to SLURM_JOB_ID by video slurm script).",
+    help="Global RNG seed for --randomize-scene-positions (Slurm video script sets SLURM_JOB_ID).",
+)
+parser.add_argument(
+    "--obst-sphere-radius-m",
+    type=float,
+    default=None,
+    help="Obstacle sphere radius in meters (default 0.05 = 10 cm diameter).",
 )
 parser.add_argument(
     "--log-mpc-every-n-steps",
@@ -178,6 +242,17 @@ parser.add_argument(
     type=str,
     default="/workspace/isaaclab/docker/logs/mpc_cuboid_track_videos",
     help="Directory for frames + mpc_cuboid_track.mp4 (bind IsaacLab/docker/logs on cluster).",
+)
+parser.add_argument(
+    "--viz-mpc-usd",
+    action="store_true",
+    help="Create lightweight USD sphere markers for MPC predicted trajectory (appears in recorded video).",
+)
+parser.add_argument(
+    "--mpc-viz-horizon-steps",
+    type=int,
+    default=900,
+    help="When --viz-mpc-usd is set, override cuRobo MPC horizon to this many steps.",
 )
 parser.add_argument(
     "--record-camera-eye-m",
@@ -237,7 +312,7 @@ import shutil
 import subprocess
 import time
 import torch
-from pxr import Gf, UsdGeom
+from pxr import Gf, UsdGeom, Vt
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
@@ -271,8 +346,8 @@ def _oscillate_xy_reflect_world(p: tuple[float, float, float]) -> tuple[float, f
     return (-float(p[0]), -float(p[1]), float(p[2]))
 
 
-_OSCILLATE_POS_A_WORLD = (0.26, -0.05, 0.17)
-_OSCILLATE_POS_B_WORLD = (0.10, 0.21, 0.24)
+_OSCILLATE_POS_A_WORLD = (0.40, -0.05, 0.34)
+_OSCILLATE_POS_B_WORLD = (0.25, 0.42, 0.47)
 _OSCILLATE_POS_C_WORLD = _oscillate_xy_reflect_world(_OSCILLATE_POS_A_WORLD)
 _OSCILLATE_POS_D_WORLD = _oscillate_xy_reflect_world(_OSCILLATE_POS_B_WORLD)
 _OSCILLATE_POS_WAYPOINTS: tuple[tuple[float, float, float], ...] = (
@@ -291,11 +366,102 @@ _OBST_SPHERES_WORLD: tuple[tuple[float, float, float], ...] = (
     (-0.2, -0.1, 0.2),
 )
 _OBST_SPHERE_RADIUS_M = 0.05
+# Populated in main() from the cuRobo robot YAML (collision_link_names + sphere radii).
+_MPC_TOUCH_LINK_NAMES: tuple[str, ...] = ()
+_MPC_TOUCH_LINK_MAX_RADIUS_M: dict[str, float] = {}
 
 # EE goal positions (robot base frame) that passed batch IK in curobo_ik_gen3_feasible_ee_sample.py:
 # world=mpc_proxies, half_extent 1m, 4096 samples, self-collision on (Slurm job 18150069).
 _IK_FEASIBLE_EE_SUCCESS_AABB_BASE_MIN = (-0.533193826675415, -0.6688550114631653, -0.10550636053085327)
 _IK_FEASIBLE_EE_SUCCESS_AABB_BASE_MAX = (0.8736165165901184, 0.7221959233283997, 1.003830909729004)
+
+
+def _sample_random_scene_positions(
+    rng: random.Random,
+) -> tuple[
+    tuple[tuple[float, float, float], ...],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]:
+    """Sample obstacle spheres and Pos A/B from a reachable workspace volume."""
+
+    def _sample_xyz(
+        x_bounds: tuple[float, float],
+        y_bounds: tuple[float, float],
+        z_bounds: tuple[float, float],
+    ) -> tuple[float, float, float]:
+        return (
+            rng.uniform(float(x_bounds[0]), float(x_bounds[1])),
+            rng.uniform(float(y_bounds[0]), float(y_bounds[1])),
+            rng.uniform(float(z_bounds[0]), float(z_bounds[1])),
+        )
+
+    goal_mn = _IK_FEASIBLE_EE_SUCCESS_AABB_BASE_MIN
+    goal_mx = _IK_FEASIBLE_EE_SUCCESS_AABB_BASE_MAX
+    x_bounds = (max(0.12, float(goal_mn[0]) + 0.05), min(float(goal_mx[0]), 0.80))
+    y_bounds = (max(-0.75, float(goal_mn[1]) + 0.05), min(float(goal_mx[1]), 0.75))
+    z_bounds = (max(0.15, float(goal_mn[2]) + 0.20), min(float(goal_mx[2]), 0.95))
+    sphere_z_bounds = (max(0.15, z_bounds[0] - 0.05), min(z_bounds[1], 0.65))
+
+    def _far_enough(candidate: tuple[float, float, float], existing: list[tuple[float, float, float]]) -> bool:
+        min_sep_m = 0.18
+        return all(math.dist(candidate, other) >= min_sep_m for other in existing)
+
+    waypoints: list[tuple[float, float, float]] = []
+    for _ in range(2):
+        for _attempt in range(200):
+            candidate = _sample_xyz(x_bounds, y_bounds, z_bounds)
+            if _far_enough(candidate, waypoints):
+                waypoints.append(candidate)
+                break
+        else:
+            waypoints.append(_sample_xyz(x_bounds, y_bounds, z_bounds))
+
+    spheres: list[tuple[float, float, float]] = []
+    exclusion_points = waypoints.copy()
+    for _ in range(len(_OBST_SPHERES_WORLD)):
+        for _attempt in range(300):
+            candidate = _sample_xyz(x_bounds, y_bounds, sphere_z_bounds)
+            if _far_enough(candidate, exclusion_points + spheres):
+                spheres.append(candidate)
+                break
+        else:
+            spheres.append(_sample_xyz(x_bounds, y_bounds, sphere_z_bounds))
+
+    return tuple(spheres), waypoints[0], waypoints[1]
+
+
+def _apply_scene_layout_from_cli() -> None:
+    """Apply CLI overrides to module-level scene layout (before spawn)."""
+    global _OBST_SPHERES_WORLD, _OSCILLATE_POS_A_WORLD, _OSCILLATE_POS_B_WORLD
+    global _OSCILLATE_POS_C_WORLD, _OSCILLATE_POS_D_WORLD, _OSCILLATE_POS_WAYPOINTS
+    global _CUBOID_TRANSLATION, _OBST_SPHERE_RADIUS_M
+
+    if args_cli.obst_sphere_radius_m is not None:
+        _OBST_SPHERE_RADIUS_M = float(args_cli.obst_sphere_radius_m)
+
+    if not args_cli.randomize_scene_positions:
+        return
+
+    seed = int(args_cli.random_scene_seed)
+    rng = random.Random(seed)
+    spheres, pos_a, pos_b = _sample_random_scene_positions(rng)
+    _OBST_SPHERES_WORLD = spheres
+    _OSCILLATE_POS_A_WORLD = pos_a
+    _OSCILLATE_POS_B_WORLD = pos_b
+    _OSCILLATE_POS_C_WORLD = _oscillate_xy_reflect_world(pos_a)
+    _OSCILLATE_POS_D_WORLD = _oscillate_xy_reflect_world(pos_b)
+    _OSCILLATE_POS_WAYPOINTS = (
+        _OSCILLATE_POS_A_WORLD,
+        _OSCILLATE_POS_B_WORLD,
+        _OSCILLATE_POS_C_WORLD,
+        _OSCILLATE_POS_D_WORLD,
+    )
+    _CUBOID_TRANSLATION = pos_a
+    _v(
+        "scene",
+        f"randomized layout seed={seed} A={pos_a} B={pos_b} spheres={spheres} radius_m={_OBST_SPHERE_RADIUS_M}",
+    )
 
 
 def _ensure_camera_sensor_initialized(camera: Camera) -> None:
@@ -399,6 +565,85 @@ def _set_cuboid_root_world_position_preserve_orientation(
     )
 
 
+def _ensure_mpc_viz_prims(prim_base: str, count: int, radius: float = 0.005) -> None:
+    """Create `count` non-physics visual sphere prims under prim_base for trajectory viz.
+
+    This is a best-effort, idempotent creator: if prims already exist it leaves them.
+    """
+    stage = sim_utils.get_current_stage()
+    if not stage.GetPrimAtPath(prim_base).IsValid():
+        sim_utils.create_prim(prim_base, "Xform")
+    for i in range(count):
+        p = f"{prim_base}/point_{i}"
+        if stage.GetPrimAtPath(p).IsValid():
+            continue
+        cfg = sim_utils.SphereCfg(radius=radius, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 1.0)))
+        # spawn initially slightly below the floor to avoid occlusion until positioned
+        cfg.func(p, cfg, translation=(0.0, 0.0, -1.0))
+
+
+def _write_mpc_viz_override_yaml(horizon_steps: int) -> str:
+    """Write a temporary particle MPC override that sets the trajectory horizon.
+
+    Using an override file is safer than mutating the installed cuRobo config in-place.
+    """
+    override_text = f"model:\n  horizon: {int(horizon_steps)}\n"
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix="_particle_mpc_override.yml", delete=False)
+    try:
+        tmp.write(override_text)
+        tmp.flush()
+        return tmp.name
+    finally:
+        tmp.close()
+
+
+def _get_mpc_ee_world_positions(
+    current_state: JointState,
+    mpc_result,
+    robot: Articulation,
+    tensor_args: TensorDeviceType,
+    rollout_fn,
+) -> list[tuple[float, float, float]]:
+    """Return a list of EE world-frame positions for the predicted MPC horizon.
+
+    This reconstructs the state trajectory from `raw_action` and then runs FK so the
+    result is the predicted EE path in world coordinates.
+    """
+    out: list[tuple[float, float, float]] = []
+    try:
+        if mpc_result is None or getattr(mpc_result, "raw_action", None) is None:
+            return out
+        state_traj = rollout_fn.get_state_from_action(current_state, mpc_result.raw_action)
+        kin = rollout_fn.compute_kinematics(state_traj)
+        if kin.ee_pos_seq is None:
+            return out
+
+        ee_seq = kin.ee_pos_seq
+        if ee_seq.ndim == 3:
+            ee_seq = ee_seq[0]
+        if ee_seq.ndim != 2:
+            return out
+
+        root_pose = robot.data.root_link_pose_w[0].float()
+        t_wb = tensor_args.to_device(root_pose[:3])
+        q_wb = tensor_args.to_device(root_pose[3:7])
+
+        for step_idx in range(ee_seq.shape[0]):
+            ee_pos_base = ee_seq[step_idx]
+            ee_pos_world = t_wb + quat_apply(q_wb.unsqueeze(0), ee_pos_base.unsqueeze(0)).squeeze(0)
+            out.append(
+                (
+                    float(ee_pos_world[0].detach().cpu()),
+                    float(ee_pos_world[1].detach().cpu()),
+                    float(ee_pos_world[2].detach().cpu()),
+                )
+            )
+    except Exception as ex:
+        _v("traj_viz", f"USD trajectory reconstruction failed: {type(ex).__name__}: {ex}")
+        return []
+    return out
+
+
 def _cuboid_centroid_world_from_prim(prim_path: str) -> tuple[float, float, float]:
     stage = sim_utils.get_current_stage()
     prim = stage.GetPrimAtPath(prim_path)
@@ -425,7 +670,8 @@ def _spawn_scene_ground_plane() -> None:
 
 
 def _spawn_blue_cuboid_only() -> None:
-    if not sim_utils.get_current_stage().GetPrimAtPath("/World/Objects").IsValid():
+    stage = sim_utils.get_current_stage()
+    if not stage.GetPrimAtPath("/World/Objects").IsValid():
         sim_utils.create_prim("/World/Objects", "Xform")
     cfg_marker = sim_utils.MeshCuboidCfg(
         size=_CUBOID_MESH_DIMS,
@@ -465,6 +711,153 @@ def _attach_articulation_for_mpc(*, stiffness: float, damping: float) -> Articul
             f"timeline.is_playing()={playing}. Check prim {COBOT_STAGE_PRIM}."
         )
     return robot
+
+def _spawn_scene_lights() -> None:
+    """Spawn lighting for scene visualization and rendering."""
+    cfg_light_distant = sim_utils.DistantLightCfg(
+        intensity=3000.0,
+        color=(0.75, 0.75, 0.75),
+    )
+    cfg_light_distant.func("/World/lightDistant", cfg_light_distant, translation=(1.0, 0.0, 10.0))
+
+
+def _spawn_scene_spheres() -> None:
+    """Spawn visual obstacle spheres for MPC collision testing and scene visualization."""
+    for i, pos_w in enumerate(_OBST_SPHERES_WORLD, start=1):
+        sphere_name_orange = f"obs_sphere_{i}"
+        sphere_name_red = f"obs_sphere_{i}_touched"
+        cfg_sphere_orange = sim_utils.SphereCfg(
+            radius=_OBST_SPHERE_RADIUS_M,
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.5, 0.0)),
+        )
+        cfg_sphere_orange.func(
+            f"/World/Objects/{sphere_name_orange}",
+            cfg_sphere_orange,
+            translation=pos_w,
+        )
+
+        cfg_sphere_red = sim_utils.SphereCfg(
+            radius=_OBST_SPHERE_RADIUS_M,
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+        )
+        cfg_sphere_red.func(
+            f"/World/Objects/{sphere_name_red}",
+            cfg_sphere_red,
+            translation=pos_w,
+        )
+        _set_sphere_touch_visual(i, touched=False)
+
+
+def _set_prim_visible(prim_path: str, visible: bool) -> None:
+    stage = sim_utils.get_current_stage()
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return
+    imageable = UsdGeom.Imageable(prim)
+    if visible:
+        imageable.MakeVisible()
+    else:
+        imageable.MakeInvisible()
+
+
+def _set_cuboid_color(prim_path: str, rgb: tuple[float, float, float]) -> None:
+    """Set the prim's display color (preview/displayColor) for simple visual feedback.
+
+    This uses the USD displayColor attribute which works for preview purposes in Isaac.
+    """
+    stage = sim_utils.get_current_stage()
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return
+
+    # Best-effort: set displayColor on the prim and any visible descendant meshes.
+    col = Vt.Vec3fArray([Gf.Vec3f(float(rgb[0]), float(rgb[1]), float(rgb[2]))])
+    try:
+        # Try the prim itself first
+        img = UsdGeom.Imageable(prim)
+        if img.GetDisplayColorAttr().IsValid():
+            img.GetDisplayColorAttr().Set(col)
+            return
+    except Exception:
+        pass
+
+    # Walk descendants and set displayColor on the first Imageable child found (meshes/groups)
+    try:
+        for child in prim.GetAllChildren():
+            try:
+                cimg = UsdGeom.Imageable(child)
+                if cimg.GetDisplayColorAttr().IsValid():
+                    cimg.GetDisplayColorAttr().Set(col)
+                    # continue to set others as well
+            except Exception:
+                continue
+    except Exception:
+        # swallow errors — visualization must not crash the sim
+        return
+
+
+def _set_sphere_touch_visual(sphere_idx: int, touched: bool) -> None:
+    orange_prim = f"/World/Objects/obs_sphere_{int(sphere_idx)}"
+    red_prim = f"/World/Objects/obs_sphere_{int(sphere_idx)}_touched"
+    _set_prim_visible(orange_prim, not touched)
+    _set_prim_visible(red_prim, touched)
+
+
+def _touch_radii_from_robot_yaml(raw_robot_cfg: dict) -> tuple[tuple[str, ...], dict[str, float]]:
+    """Max cuRobo collision-sphere radius per link from the robot YAML (MPC collision model)."""
+    kin = raw_robot_cfg.get("robot_cfg", {}).get("kinematics", {})
+    link_names = list(kin.get("collision_link_names") or [])
+    spheres = kin.get("collision_spheres") or {}
+    link_max_r: dict[str, float] = {}
+    for name in link_names:
+        if name not in spheres:
+            continue
+        link_max_r[name] = max(float(s["radius"]) for s in spheres[name])
+    return tuple(link_names), link_max_r
+
+
+def _sphere_penetration_touch(
+    robot: Articulation,
+    obstacle_center_w: tuple[float, float, float],
+    obstacle_radius_m: float,
+    *,
+    touch_link_names: tuple[str, ...],
+    touch_link_max_radius_m: dict[str, float],
+) -> bool:
+    """True only if an MPC collision link sphere penetrates the obstacle sphere (not proximity)."""
+    if not touch_link_names:
+        return False
+    name_to_idx = {n: i for i, n in enumerate(robot.body_names)}
+    link_pos_w = robot.data.body_link_pos_w[0]
+    center = torch.tensor(obstacle_center_w, device=link_pos_w.device, dtype=link_pos_w.dtype)
+    for link_name in touch_link_names:
+        idx = name_to_idx.get(link_name)
+        if idx is None:
+            continue
+        r_link = float(touch_link_max_radius_m.get(link_name, 0.0))
+        dist = float(torch.norm(link_pos_w[idx] - center).item())
+        if dist < float(obstacle_radius_m) + r_link - 1e-4:
+            return True
+    return False
+
+
+def _update_sphere_touch_visuals(robot: Articulation, touched_flags: list[bool]) -> None:
+    if len(touched_flags) != len(_OBST_SPHERES_WORLD):
+        return
+    for i, center_w in enumerate(_OBST_SPHERES_WORLD):
+        if touched_flags[i]:
+            continue
+        if _sphere_penetration_touch(
+            robot,
+            center_w,
+            float(_OBST_SPHERE_RADIUS_M),
+            touch_link_names=_MPC_TOUCH_LINK_NAMES,
+            touch_link_max_radius_m=_MPC_TOUCH_LINK_MAX_RADIUS_M,
+        ):
+            touched_flags[i] = True
+            _set_sphere_touch_visual(i + 1, touched=True)
+            _v("sphere_touch", f"sphere_{i + 1} penetrated (MPC collision links); switched to red")
+
 
 
 def _resolve_usd_path_to_load() -> str:
@@ -508,34 +901,6 @@ def _resolve_usd_path_to_load() -> str:
     return out
 
 
-def _spawn_scene_lights() -> None:
-    """Spawn lighting for scene visualization and rendering."""
-    # Distant light for general illumination
-    cfg_light_distant = sim_utils.DistantLightCfg(
-        intensity=3000.0,
-        color=(0.75, 0.75, 0.75),
-    )
-    cfg_light_distant.func("/World/lightDistant", cfg_light_distant, translation=(1.0, 0.0, 10.0))
-
-
-def _spawn_scene_spheres() -> None:
-    """Spawn visual obstacle spheres for MPC collision testing and scene visualization."""
-    if not sim_utils.get_current_stage().GetPrimAtPath("/World/Objects").IsValid():
-        sim_utils.create_prim("/World/Objects", "Xform")
-    # Spawn spheres at predefined world positions
-    for i, pos_w in enumerate(_OBST_SPHERES_WORLD, start=1):
-        sphere_name = f"obs_sphere_{i}"
-        cfg_sphere = sim_utils.SphereCfg(
-            radius=_OBST_SPHERE_RADIUS_M,
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.5, 0.0)),
-        )
-        cfg_sphere.func(
-            f"/World/Objects/{sphere_name}",
-            cfg_sphere,
-            translation=pos_w,
-        )
-
-
 def _world_point_to_base(
     robot: Articulation, p_w: tuple[float, float, float], tensor_args: TensorDeviceType
 ) -> torch.Tensor:
@@ -562,7 +927,10 @@ def _world_pose_to_base_list(
     q_inv = quat_inv(q_wb.unsqueeze(0))
     p_b = quat_apply(q_inv, rel).squeeze(0)
     q_b = quat_mul(q_inv, q_identity.unsqueeze(0)).squeeze(0)
-    return [float(p_b[0]), float(p_b[1]), float(p_b[2]), float(q_b[0]), float(q_b[1]), float(q_b[2]), float(q_b[3])]
+    pose_b = [float(p_b[0]), float(p_b[1]), float(p_b[2]), float(q_b[0]), float(q_b[1]), float(q_b[2]), float(q_b[3])]
+    pose_b_quat = torch.tensor(pose_b[3:], dtype=torch.float32)
+    assert abs(float(pose_b_quat.norm()) - 1.0) < 1e-3, f"Sphere pose quaternion not normalized: {pose_b}"
+    return pose_b
 
 
 def _base_point_to_world(
@@ -583,7 +951,7 @@ def _build_mpc_world(
     tensor_args: TensorDeviceType,
     floor_only: bool = False,
 ) -> WorldConfig:
-    """Primitive obstacles in robot base frame (cuRobo convention): floor; optional table proxy only."""
+    """Primitive obstacles in robot base frame: floor, obstacle spheres, optional table_proxy cuboid."""
     floor_pose = [0.0, 0.0, -0.3, 1.0, 0.0, 0.0, 0.0]
     cuboid_entries: dict = {
         "floor": {"dims": [4.0, 4.0, 0.05], "pose": floor_pose},
@@ -601,7 +969,15 @@ def _build_mpc_world(
     world_dict: dict = {"cuboid": cuboid_entries}
     if sphere_entries:
         world_dict["sphere"] = sphere_entries
-    return WorldConfig.from_dict(world_dict)
+    world_model = WorldConfig.from_dict(world_dict)
+    n_spheres = len(world_model.sphere) if world_model.sphere else 0
+    n_cuboids = len(world_model.cuboid) if world_model.cuboid else 0
+    _v(
+        "world",
+        f"cuRobo world: cuboids={n_cuboids} (floor{'+table_proxy' if not floor_only else ' only'}) "
+        f"spheres={n_spheres} radius_m={_OBST_SPHERE_RADIUS_M}",
+    )
+    return world_model
 
 
 def _ee_to_cuboid_distance_m(robot: Articulation, prim_path: str, link_regex: str) -> float:
@@ -631,6 +1007,45 @@ def _metric_float(m, name: str) -> float | None:
     if v is None:
         return None
     return float(v.reshape(-1)[0].detach().cpu())
+
+
+def _tune_world_primitive_collision(
+    rollout_fn,
+    *,
+    activation_m: float,
+    cost_weight: float = 1.0e7,
+    constraint_weight: float = 1.0e8,
+) -> None:
+    """Tune world obstacle collision cost + constraint (constraint drives feasible= constraint==0)."""
+
+    def _tune_one(pc, weight: float, label: str) -> None:
+        if pc is None:
+            return
+        try:
+            pc.update_weight(weight)
+        except Exception:
+            pc.weight = pc.tensor_args.to_device([float(weight)])
+        pc.classify = True
+        pc.use_sweep = True
+        if hasattr(pc, "world_coll_checker") and pc.world_coll_checker is not None:
+            pc.coll_check_fn = pc.world_coll_checker.get_sphere_collision
+            pc.sweep_check_fn = pc.world_coll_checker.get_swept_sphere_collision
+        act = pc.tensor_args.to_device([float(activation_m)])
+        try:
+            pc.activation_distance[:] = act
+        except Exception:
+            pc.activation_distance = act
+        _v(
+            "mpc_cfg",
+            f"{label}: weight={weight:.0g} classify=True use_sweep=True activation_distance={activation_m:.3f}m",
+        )
+
+    _tune_one(getattr(rollout_fn, "primitive_collision_cost", None), cost_weight, "world_collision_cost")
+    _tune_one(
+        getattr(rollout_fn, "primitive_collision_constraint", None),
+        constraint_weight,
+        "world_collision_constraint",
+    )
 
 
 def _metric_bool(m, name: str) -> bool | None:
@@ -712,23 +1127,151 @@ def _sim_joint_state_ordered(
 
 
 def _apply_mpc_js_action(robot: Articulation, mpc_result, mpc_joint_names: list[str]) -> None:
-    pos_all = robot.data.joint_pos[0].clone()
     js_cmd = mpc_result.js_action.get_ordered_joint_state(mpc_joint_names)
-    cmd_pos = js_cmd.position
+    _apply_joint_state(robot, js_cmd)
+
+
+def _apply_joint_state(robot: Articulation, joint_state: JointState) -> None:
+    pos_all = robot.data.joint_pos[0].clone()
+    cmd_pos = joint_state.position
     if cmd_pos is None:
-        _v("mpc_guard", "js_action.position is None; holding last commanded position")
+        _v("mpc_guard", "joint_state.position is None; holding last commanded position")
         return
     if torch.isnan(cmd_pos).any().item() or torch.isinf(cmd_pos).any().item():
-        _v("mpc_guard", "js_action.position has NaN/Inf; holding last commanded position")
+        _v("mpc_guard", "joint_state.position has NaN/Inf; holding last commanded position")
         return
+    if cmd_pos.ndim == 1:
+        cmd_values = cmd_pos
+    elif cmd_pos.ndim == 2 and cmd_pos.shape[0] == 1:
+        cmd_values = cmd_pos[0]
+    else:
+        cmd_values = cmd_pos.reshape(-1)
     name_to_i = {n: i for i, n in enumerate(robot.joint_names)}
-    for j, name in enumerate(js_cmd.joint_names):
+    for j, name in enumerate(joint_state.joint_names or []):
         if name in name_to_i:
-            pos_all[name_to_i[name]] = cmd_pos[0, j].to(pos_all.device)
+            pos_all[name_to_i[name]] = cmd_values[j].to(pos_all.device)
         elif name not in _MPC_JS_MISSING_JOINTS_WARNED:
             _v("mpc_guard", f"MPC joint name not found on articulation (skipping): {name!r}")
             _MPC_JS_MISSING_JOINTS_WARNED.add(name)
     robot.set_joint_position_target(pos_all.unsqueeze(0))
+
+
+def _arm_joint_indices_for_mpc(robot: Articulation, mpc_joint_names: list[str]) -> list[int]:
+    """Map MPC-controlled joint names to indices in ``robot.joint_names`` (same order as MPC)."""
+    name_to_i = {n: i for i, n in enumerate(robot.joint_names)}
+    missing = [n for n in mpc_joint_names if n not in name_to_i]
+    if missing:
+        raise RuntimeError(f"MPC joint names not found on articulation: {missing}")
+    return [name_to_i[n] for n in mpc_joint_names]
+
+
+def _apply_sim_commands_after_mpc(
+    robot: Articulation,
+    mpc_result,
+    mpc_joint_names: list[str],
+    *,
+    fe_step: bool,
+    gravity_compensation: bool,
+    arm_joint_ids: list[int],
+) -> None:
+    """Apply MPC position targets when feasible; always refresh joint effort targets (PhysX feedforward)."""
+    num_envs = robot.data.joint_pos.shape[0]
+    num_j = robot.data.joint_pos.shape[1]
+    device = robot.device
+    dtype = robot.data.joint_pos.dtype
+    efforts = torch.zeros(num_envs, num_j, device=device, dtype=dtype)
+
+    if gravity_compensation and arm_joint_ids:
+        physx_view = getattr(robot, "root_physx_view", None)
+        if physx_view is None:
+            _v("grav_ff", "root_physx_view missing; gravity feedforward skipped")
+        else:
+            try:
+                g_all = physx_view.get_gravity_compensation_forces()
+                idx = torch.as_tensor(arm_joint_ids, device=device, dtype=torch.long)
+                efforts[:, idx] = g_all[:, idx].to(dtype=dtype)
+            except Exception as ex:
+                _v("grav_ff", f"get_gravity_compensation_forces failed: {ex}")
+
+    if fe_step:
+        if mpc_result is None:
+            _v("mpc_guard", "feasible step but mpc_result is None; skipping joint position update")
+        else:
+            _apply_mpc_js_action(robot, mpc_result, mpc_joint_names)
+
+    robot.set_joint_effort_target(efforts)
+
+
+def _visualize_mpc_trajectory(
+    mpc_result,
+    robot: Articulation,
+    tensor_args: TensorDeviceType,
+    rollout_fn=None,
+) -> None:
+    """Visualize the best MPC trajectory as cyan spheres in the world frame using debug_draw.
+
+    Data Flow:
+    1. Extract best trajectory from mpc_result.top_rollouts (MPPI gives ranked rollouts).
+    2. Forward Kinematics: Use rollout_fn to compute EE positions in robot base frame.
+    3. Coordinate Transform: Convert base frame -> world frame using robot root pose (wxyz).
+    4. Rendering: Use debug_draw overlay (no physics collision, efficient GPU rasterization).
+    """
+    try:
+        from omni.isaac.debug_draw import _debug_draw
+    except ImportError:
+        return  # debug_draw not available; skip visualization
+
+    if mpc_result is None or not hasattr(mpc_result, "top_rollouts") or mpc_result.top_rollouts is None:
+        return
+
+    if rollout_fn is None:
+        return
+
+    try:
+        draw = _debug_draw.get_debug_draw_interface()
+        draw.clear_points()  # Remove previous trajectory
+
+        # Get the best (first) rollout from top_rollouts.
+        best_rollout = mpc_result.top_rollouts[0] if len(mpc_result.top_rollouts) > 0 else None
+        if best_rollout is None or not hasattr(best_rollout, "js_traj"):
+            return
+
+        js_traj = best_rollout.js_traj
+        if js_traj is None or js_traj.position is None:
+            return
+
+        horizon = js_traj.position.shape[0]  # Time horizon (e.g., 60 steps)
+
+        # Get robot root pose in world frame (Isaac root quat is wxyz).
+        root_pose = robot.data.root_link_pose_w[0].float()
+        t_wb = tensor_args.to_device(root_pose[:3])  # World origin of robot base
+        q_wb = tensor_args.to_device(root_pose[3:7])  # Robot base -> world (wxyz)
+
+        # FK on entire trajectory: loop over horizon steps.
+        ee_pos_list = []  # Will accumulate world-frame EE positions
+        for step_idx in range(horizon):
+            # Extract single joint state at this step.
+            q_step = js_traj.position[step_idx : step_idx + 1]  # Shape: (1, num_joints)
+            step_js = JointState.from_position(q_step, joint_names=rollout_fn.joint_names)
+
+            # Compute kinematics for this step -> ee_pos is in base frame.
+            step_kin = rollout_fn.compute_kinematics(step_js)
+            ee_pos_base = step_kin.ee_pos_seq[0]  # Shape: (3,), base frame
+
+            # Transform base -> world: p_w = t_wb + R(q_wb) * p_b
+            rel = ee_pos_base.unsqueeze(0)  # (1, 3)
+            ee_pos_world = t_wb + quat_apply(q_wb.unsqueeze(0), rel).squeeze(0)  # (3,)
+            ee_pos_list.append(ee_pos_world.detach().cpu().numpy())
+
+        # Convert to array and draw as points (cyan, 1 cm diameter = 0.005 m radius).
+        if ee_pos_list:
+            points_array = torch.tensor(ee_pos_list, dtype=torch.float32, device="cpu")
+            color = (0.0, 1.0, 1.0, 1.0)  # RGBA cyan
+            size = 0.005  # 1 cm diameter -> 0.005 m radius
+            draw.draw_points(points_array, colors=color, sizes=size)
+
+    except Exception as ex:
+        _v("traj_viz", f"Trajectory visualization error: {type(ex).__name__}: {ex}")
 
 
 def _goal_ee_quat_down_wxyz(tensor_args: TensorDeviceType, batch: int) -> torch.Tensor:
@@ -738,15 +1281,22 @@ def _goal_ee_quat_down_wxyz(tensor_args: TensorDeviceType, batch: int) -> torch.
 
 
 def _goal_pose_above_cuboid(
-    robot: Articulation,
+    robot,
     *,
-    cuboid_centroid_w: tuple[float, float, float],
-    above_z_m: float,
-    tensor_args: TensorDeviceType,
+    cuboid_centroid_w,
+    above_z_m,
+    tensor_args,
+    position_only: bool = True,   # add this flag
 ) -> Pose:
     p_w = (cuboid_centroid_w[0], cuboid_centroid_w[1], cuboid_centroid_w[2] + above_z_m)
     p_b = _world_point_to_base(robot, p_w, tensor_args).unsqueeze(0)
-    q_b = _goal_ee_quat_down_wxyz(tensor_args, p_b.shape[0])
+    if position_only:
+        # Let cuRobo ignore rotation — pass None or identity with high tolerance
+        q_b = tensor_args.to_device(
+            torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32)
+        )
+    else:
+        q_b = _goal_ee_quat_down_wxyz(tensor_args, p_b.shape[0])
     return Pose(position=p_b, quaternion=q_b, normalize_rotation=False)
 
 
@@ -771,6 +1321,8 @@ def _goal_pose_ee_world_dz(
 
 
 def main() -> None:
+    _apply_scene_layout_from_cli()
+
     script_dir = Path(__file__).resolve().parent
     isaaclab_root = script_dir.parent.parent.parent
     default_yml = isaaclab_root / "content" / "cobot_runtime" / "gen3_curobo_robot.yml"
@@ -805,6 +1357,9 @@ def main() -> None:
     next_capture_sim_t = 0.0
     record_fps_val = max(1e-3, float(args_cli.record_fps))
     record_duration_val = max(0.01, float(args_cli.record_duration_s))
+    sphere_touched_flags = [False] * len(_OBST_SPHERES_WORLD)
+    cube_touched = False
+    mpc_viz_override_path = ""
 
     reach_feasible_n = 0
     reach_sum_pose_err = 0.0
@@ -895,16 +1450,48 @@ def main() -> None:
             use_cuda_graph_metrics=True,
             self_collision_check=mpc_self,
             collision_checker_type=CollisionCheckerType.PRIMITIVE,
-            collision_cache={"obb": 32},
-            store_rollouts=False,
+            collision_cache={"obb": 32, "sphere": 10},
+            store_rollouts=True,
             step_dt=float(sim_cfg.dt),
         )
         if args_cli.mpc_collision_activation_m is not None:
             mpc_load_kw["collision_activation_distance"] = float(args_cli.mpc_collision_activation_m)
+        if args_cli.viz_mpc_usd:
+            mpc_viz_override_path = _write_mpc_viz_override_yaml(int(args_cli.mpc_viz_horizon_steps))
+            mpc_load_kw["override_particle_file"] = mpc_viz_override_path
+            _v("mpc_cfg", f"USD trajectory viz enabled; overriding MPC horizon to {int(args_cli.mpc_viz_horizon_steps)} steps")
         mpc_config = MpcSolverConfig.load_from_robot_config(robot_cfg, world_model, **mpc_load_kw)
+
+        global _MPC_TOUCH_LINK_NAMES, _MPC_TOUCH_LINK_MAX_RADIUS_M
+        _MPC_TOUCH_LINK_NAMES, _MPC_TOUCH_LINK_MAX_RADIUS_M = _touch_radii_from_robot_yaml(raw)
+        _v(
+            "touch",
+            f"MPC-link penetration touch: {len(_MPC_TOUCH_LINK_NAMES)} links "
+            f"(max_r up to {max(_MPC_TOUCH_LINK_MAX_RADIUS_M.values()) if _MPC_TOUCH_LINK_MAX_RADIUS_M else 0:.3f} m)",
+        )
+
+        _act_m = (
+            float(args_cli.mpc_collision_activation_m)
+            if args_cli.mpc_collision_activation_m is not None
+            else 0.15
+        )
+        _tune_world_primitive_collision(
+            mpc_config.rollout_fn,
+            activation_m=_act_m,
+            cost_weight=1.0e7,
+            constraint_weight=1.0e8,
+        )
+
         mpc = MpcSolver(mpc_config)
+        mpc.update_world(world_model)
         joint_names = mpc.rollout_fn.joint_names
+        arm_joint_ids = _arm_joint_indices_for_mpc(robot, joint_names)
         _log_joint_alignment(robot, joint_names)
+        if args_cli.enable_gravity_compensation:
+            _v(
+                "grav_ff",
+                f"PhysX gravity feedforward enabled; MPC arm DOFs={len(arm_joint_ids)} joint_idx={arm_joint_ids}",
+            )
         retract_cfg = mpc.rollout_fn.dynamics_model.retract_config.clone().unsqueeze(0)
         current_state = JointState.from_position(retract_cfg, joint_names=joint_names)
         state0 = mpc.rollout_fn.compute_kinematics(current_state)
@@ -916,9 +1503,17 @@ def main() -> None:
         )
         goal_buffer = mpc.setup_solve_single(goal, 1)
 
+        if args_cli.viz_mpc_usd:
+            _ensure_mpc_viz_prims("/World/MpcViz", int(mpc.rollout_fn.horizon), radius=0.005)
+            mpc_viz_count = int(mpc.rollout_fn.horizon)
+            _v("mpc_cfg", f"USD trajectory prims created: {int(mpc.rollout_fn.horizon)} spheres")
+
         use_first_ee_dz = args_cli.first_goal_ee_world_dz_m is not None
         first_ee_dz_m = float(args_cli.first_goal_ee_world_dz_m) if use_first_ee_dz else 0.0
         switched_from_first_ee_goal = not use_first_ee_dz
+        mpc_update_every_n_steps = max(1, int(args_cli.mpc_update_every_n_steps))
+        planned_cmd_buffer: JointState | None = None
+        planned_cmd_buffer_start_step = 0
 
         if use_first_ee_dz:
             gpose = _goal_pose_ee_world_dz(
@@ -993,6 +1588,10 @@ def main() -> None:
 
         sim_step_k = 0
         mpc_result = None
+        # USD viz state for MPC predicted trajectory (appears in recorded camera frames)
+        mpc_viz_enabled = bool(args_cli.viz_mpc_usd)
+        mpc_viz_prim_base = "/World/MpcViz"
+        mpc_viz_count = 0
         while simulation_app.is_running():
             stop_sim_t = float("inf")
             if args_cli.max_sim_time_s > 0.0:
@@ -1016,12 +1615,25 @@ def main() -> None:
                 _v("goal", "reverted to marker goal after first-goal-ee-world-dz-m step")
 
             robot.update(float(sim_cfg.dt))
+            _update_sphere_touch_visuals(robot, sphere_touched_flags)
             cu_js_pre = _sim_joint_state_ordered(robot, joint_names, tensor_args)
-            # Only update MPC plan every N steps; reuse trajectory for intermediate steps
-            if sim_step_k % int(args_cli.mpc_update_every_n_steps) == 0:
-                mpc_result = mpc.step(cu_js_pre, max_attempts=2)
+            new_mpc_result = None
+            if sim_step_k % mpc_update_every_n_steps == 0 or mpc_result is None:
+                new_mpc_result = mpc.step(cu_js_pre, max_attempts=2)
                 reach_mpc_steps_total += 1
-            m_fe = mpc_result.metrics
+                if _metric_bool(new_mpc_result.metrics, "feasible") is True:
+                    mpc_result = new_mpc_result
+                if mpc_viz_enabled:
+                    ee_positions = _get_mpc_ee_world_positions(cu_js_pre, new_mpc_result, robot, tensor_args, mpc.rollout_fn)
+                    for i, p in enumerate(ee_positions[: mpc_viz_count]):
+                        prim_p = f"{mpc_viz_prim_base}/point_{i}"
+                        try:
+                            _set_cuboid_root_world_position_preserve_orientation(prim_p, p)
+                        except Exception:
+                            pass
+            m_fe = new_mpc_result.metrics if new_mpc_result is not None else (
+                mpc_result.metrics if mpc_result is not None else None
+            )
             fe_step = _metric_bool(m_fe, "feasible")
             infeas_warn_stride = (
                 int(args_cli.diag_every_n_steps) if int(args_cli.diag_every_n_steps) > 0 else 50
@@ -1082,8 +1694,33 @@ def main() -> None:
                     tensor_args=tensor_args,
                 )
 
-            if fe_step is True:
-                _apply_mpc_js_action(robot, mpc_result, joint_names)
+            _apply_sim_commands_after_mpc(
+                robot,
+                mpc_result if fe_step is True else None,
+                joint_names,
+                fe_step=(fe_step is True),
+                gravity_compensation=bool(args_cli.enable_gravity_compensation),
+                arm_joint_ids=arm_joint_ids,
+            )
+            if (
+                bool(args_cli.enable_gravity_compensation)
+                and arm_joint_ids
+                and int(args_cli.diag_every_n_steps) > 0
+                and sim_step_k % int(args_cli.diag_every_n_steps) == 0
+            ):
+                physx_view = getattr(robot, "root_physx_view", None)
+                if physx_view is not None:
+                    try:
+                        g_all = physx_view.get_gravity_compensation_forces()
+                        idx = torch.as_tensor(arm_joint_ids, device=robot.device, dtype=torch.long)
+                        g_arm = g_all[:, idx]
+                        _v(
+                            "grav_ff",
+                            f"arm |tau_g| max={float(g_arm.abs().max().cpu()):.4f} Nm "
+                            f"mean={float(g_arm.abs().mean().cpu()):.4f}",
+                        )
+                    except Exception as ex:
+                        _v("grav_ff", f"diag gravity torque failed: {ex}")
             robot.write_data_to_sim()
             sim.step()
             sim_elapsed += float(sim_cfg.dt)
@@ -1124,6 +1761,21 @@ def main() -> None:
 
             if sim_elapsed + 1e-9 >= next_log_sim_t:
                 dist_c = _ee_to_cuboid_distance_m(robot, prim_path, args_cli.distance_link_regex)
+                # If the robot touches the blue cuboid, recolor it green for visual feedback.
+                # Use a small threshold similar to sphere touch buffer.
+                try:
+                    if not cube_touched and _sphere_penetration_touch(
+                        robot,
+                        _cuboid_centroid_world_from_prim(prim_path),
+                        float(_OBST_SPHERE_RADIUS_M),
+                        touch_link_names=_MPC_TOUCH_LINK_NAMES,
+                        touch_link_max_radius_m=_MPC_TOUCH_LINK_MAX_RADIUS_M,
+                    ):
+                        _set_cuboid_color(prim_path, (0.0, 1.0, 0.0))
+                        cube_touched = True
+                        _v("cube_touch", f"cuboid {prim_path} touched; recolored to green")
+                except Exception as ex:
+                    _v("cube_touch", f"cuboid recolor attempt failed: {ex}")
                 if args_cli.diag_extended_csv and mpc_result is not None:
                     dist_g = _ee_to_goal_world_distance_m(
                         robot,
